@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use anyhow::Result;
@@ -21,10 +21,9 @@ struct Topic {
 
 impl Manifest {
     #[cfg_attr(not(test), expect(dead_code))]
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(manifest_content: &[u8]) -> Result<Self> {
         let lua = Lua::new();
-        let manifest_content = std::fs::read_to_string(path)?;
-        let manifest_value = lua.load(&manifest_content).eval::<Value>()?;
+        let manifest_value = lua.load(manifest_content).eval::<Value>()?;
 
         let mut topics = HashMap::new();
         for (name, topic) in manifest_value
@@ -59,8 +58,6 @@ impl Manifest {
 mod tests {
     use super::*;
 
-    use tempfile::NamedTempFile;
-
     #[test]
     fn test_load_manifest() {
         let manifest_content = r#"return {
@@ -77,11 +74,7 @@ mod tests {
                 }
             }
         }"#;
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(temp_file.as_file_mut(), manifest_content.as_bytes()).unwrap();
-
-        let manifest = Manifest::load(temp_file.path()).unwrap();
+        let manifest = Manifest::load(manifest_content.as_bytes()).expect("Failed to load manifest");
         assert_eq!(manifest.topics.len(), 3);
         assert_eq!(manifest.topics["topic1"].paths.len(), 2);
         assert_eq!(manifest.topics["topic2"].paths.len(), 1);
