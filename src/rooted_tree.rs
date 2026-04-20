@@ -3,35 +3,31 @@ use std::path::Path;
 use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow, bail};
-use gix_object::{Blob, Object, Tree, WriteTo, compute_hash, tree::EntryKind};
+use gix::objs::{Blob, Object, Tree, WriteTo, compute_hash, tree::EntryKind};
 use walkdir::WalkDir;
 
 #[derive(Debug)]
 pub struct RootedTree {
     pub root: PathBuf,
-    pub tree_oid: gix_hash::ObjectId,
-    pub objects: HashMap<gix_hash::ObjectId, Object>,
+    pub tree_oid: gix::hash::ObjectId,
+    pub objects: HashMap<gix::hash::ObjectId, Object>,
 }
 
 impl RootedTree {
-    /// Captures the state of the filesystem at the given root path, creating a tree object that
-    /// represents the directory structure and file contents. The `normalize_content` function is
-    /// used to process file contents, and the `entry_predicate` function determines
-    /// which files and directories should be included in the tree.
     pub fn capture(
         root: PathBuf,
         normalize_content: impl Fn(&Path, Vec<u8>) -> Result<Vec<u8>>,
-        entry_predicate: impl Fn(&Path) -> bool,
+        should_include: impl Fn(&Path) -> bool,
     ) -> Result<Self> {
         let wd = WalkDir::new(&root).contents_first(true).sort_by_file_name();
 
         let mut tree_entries = HashMap::new();
-        let mut objects = HashMap::<gix_hash::ObjectId, Object>::new();
+        let mut objects = HashMap::<gix::hash::ObjectId, Object>::new();
 
         for maybe_entry in wd {
             let entry = maybe_entry?;
 
-            if !entry_predicate(&entry.path()) {
+            if !should_include(&entry.path()) {
                 continue;
             }
 
@@ -46,11 +42,11 @@ impl RootedTree {
                 let blob = Blob {
                     data: normalize_content(entry.path(), fs::read(entry.path())?)?,
                 };
-                let oid = compute_hash(gix_hash::Kind::Sha1, gix_object::Kind::Blob, &blob.data)?;
+                let oid = compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &blob.data)?;
                 let kind = EntryKind::Blob;
                 tree_entries.insert(
                     key,
-                    gix_object::tree::Entry {
+                    gix::objs::tree::Entry {
                         mode: kind.into(),
                         filename: entry.file_name().to_string_lossy().as_bytes().into(),
                         oid: oid.into(),
@@ -61,7 +57,7 @@ impl RootedTree {
                 let mut this_tree_entries = Vec::new();
                 for maybe_subentry in fs::read_dir(entry.path())? {
                     let subentry = maybe_subentry?;
-                    if !entry_predicate(&subentry.path()) {
+                    if !should_include(&subentry.path()) {
                         continue;
                     }
                     let subkey = key.join(subentry.file_name());
@@ -75,10 +71,10 @@ impl RootedTree {
                 };
                 let mut data = Vec::<u8>::new();
                 this_tree.write_to(&mut data)?;
-                let oid = compute_hash(gix_hash::Kind::Sha1, gix_object::Kind::Tree, &data)?;
+                let oid = compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Tree, &data)?;
                 tree_entries.insert(
                     key,
-                    gix_object::tree::Entry {
+                    gix::objs::tree::Entry {
                         mode: EntryKind::Tree.into(),
                         filename: entry.file_name().to_string_lossy().as_bytes().into(),
                         oid: oid.into(),
@@ -100,7 +96,7 @@ impl RootedTree {
     }
 
     /// Applies the captured tree to the filesystem, creating files and directories as needed.
-    pub fn apply(mut self) -> Result<()> {
+    pub fn apply(mut self, normalize_content: impl Fn(&Path, Vec<u8>) -> Result<Vec<u8>>,) -> Result<()> {
         let mut stack = vec![(self.root.clone(), self.tree_oid)];
         while let Some((path, oid)) = stack.pop() {
             let obj = self.objects.remove(&oid).ok_or_else(|| {
@@ -109,7 +105,7 @@ impl RootedTree {
             match obj {
                 Object::Blob(blob) => {
                     fs::create_dir_all(path.parent().unwrap())?;
-                    fs::write(path, &blob.data)?;
+                    fs::write(&path, normalize_content(&path, blob.data)? )?;
                 }
                 Object::Tree(tree) => {
                     fs::create_dir_all(&path)?;
@@ -170,7 +166,7 @@ mod tests {
         captured_tree.root = dest_root.clone();
 
         // 4. Apply the tree to the filesystem
-        captured_tree.apply()?;
+        captured_tree.apply(|_path, content| Ok(content))?;
 
         // 5. Verify the roundtripped filesystem matches the original
         let dest_file1 = dest_root.join("root_file.txt");
@@ -206,7 +202,7 @@ mod tests {
         let dest_dir = tempdir()?;
         let dest_root = dest_dir.path().to_path_buf();
         captured_tree.root = dest_root.clone();
-        captured_tree.apply()?;
+        captured_tree.apply(|_path, content| Ok(content))?;
 
         assert!(dest_root.join("keep.txt").exists());
         assert!(!dest_root.join("ignore.txt").exists(), "The ignored file should not have roundtripped");
