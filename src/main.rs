@@ -1,16 +1,7 @@
-use std::path::PathBuf;
-
-use porchetta::rooted_tree::RootedTree;
+use porchetta::store::PorchettaStore;
 
 fn main() {
-    println!(
-        "{:#?}",
-        RootedTree::capture(
-            PathBuf::from("."),
-            |_, bs| Ok(bs),
-            |p| !p
-                .components()
-                .any(|c| c.as_os_str() == ".git" || c.as_os_str() == "target")
-        )
-    );
+    let store = PorchettaStore::init().unwrap();
+    println!("{:#?}", store);
+    println!("{:#?}", store.read_manifest().unwrap());
 }

@@ -6,21 +6,20 @@ use std::{
 use anyhow::Result;
 use mlua::{Function, Lua, Value};
 
-#[cfg_attr(not(test), expect(dead_code))]
-struct Manifest {
+#[derive(Debug)]
+pub struct Manifest {
     #[allow(dead_code)]
     pub lua: Lua,
     pub topics: HashMap<String, Topic>,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
-struct Topic {
+#[derive(Debug)]
+pub struct Topic {
     pub paths: Vec<PathBuf>,
     pub predicate: Option<Function>,
 }
 
 impl Manifest {
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
         let lua = Lua::new();
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
