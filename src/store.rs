@@ -137,10 +137,7 @@ impl PorchettaStore {
 
     pub fn update_topic_head(&self, topic: &str, new_head: gix::ObjectId) -> Result<()> {
         let branch_name = format!("topic/{topic}");
-        debug!(
-            "Updating topic head for '{}' to {}",
-            topic, new_head
-        );
+        debug!("Updating topic head for '{}' to {}", topic, new_head);
         self.update_branch_head(&branch_name, new_head)
     }
 

@@ -77,11 +77,7 @@ impl PorchettaEngine {
                 }
             }
 
-            debug!(
-                "Topic '{}' has {} files to sync",
-                name,
-                topic_files.len()
-            );
+            debug!("Topic '{}' has {} files to sync", name, topic_files.len());
 
             // let Some(mut common_ancestor) = info.paths.iter().cloned().reduce(|a, b| {
             //     let mut c = PathBuf::new();
@@ -161,10 +157,7 @@ impl PorchettaEngine {
 
             let base_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_hostname_head(&name, &hostname)? {
-                    trace!(
-                        "Found base tree from hostname head: {}",
-                        commit_oid
-                    );
+                    trace!("Found base tree from hostname head: {}", commit_oid);
                     self.store
                         .repo
                         .find_object(commit_oid)?

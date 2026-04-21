@@ -20,11 +20,11 @@ enum Command {
 }
 
 fn main() {
-    simple_logger::
-        SimpleLogger::new()
+    simple_logger::SimpleLogger::new()
         .with_local_timestamps()
         .with_level(log::LevelFilter::Debug)
-        .init().expect("Failed to initialize logger");
+        .init()
+        .expect("Failed to initialize logger");
 
     let cli = Cli::parse();
 
@@ -41,7 +41,6 @@ fn main() {
         Command::Edit => {
             let store = PorchettaStore::load().expect("Failed to load store");
             let mut engine = PorchettaEngine::new(store);
-
 
             let editor = std::env::var("EDITOR").expect("EDITOR environment variable not set");
 

@@ -19,10 +19,7 @@ pub struct Topic {
 
 impl Manifest {
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
-        debug!(
-            "Parsing manifest ({:?} bytes)",
-            manifest_content.len()
-        );
+        debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
 
