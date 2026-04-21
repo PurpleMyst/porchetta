@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use log::info;
 
 use porchetta::engine::PorchettaEngine;
 use porchetta::store::PorchettaStore;
@@ -19,12 +20,18 @@ enum Command {
 }
 
 fn main() {
+    simple_logger::
+        SimpleLogger::new()
+        .with_local_timestamps()
+        .with_level(log::LevelFilter::Debug)
+        .init().expect("Failed to initialize logger");
+
     let cli = Cli::parse();
 
     match cli.command {
         Command::Init => {
             PorchettaStore::init().expect("Failed to initialize store");
-            println!("Initialized Porchetta store");
+            info!("Initialized Porchetta store");
         }
         Command::Show => {
             let store = PorchettaStore::load().expect("Failed to load store");
@@ -34,6 +41,7 @@ fn main() {
         Command::Edit => {
             let store = PorchettaStore::load().expect("Failed to load store");
             let mut engine = PorchettaEngine::new(store);
+
 
             let editor = std::env::var("EDITOR").expect("EDITOR environment variable not set");
 
@@ -56,13 +64,13 @@ fn main() {
                     std::fs::read(temp_file.path()).expect("Failed to read edited manifest")
                 })
                 .expect("Failed to edit manifest");
-            println!("Edited manifest");
+            info!("Edited manifest");
         }
         Command::Sync => {
             let store = PorchettaStore::load().expect("Failed to load store");
             let mut engine = PorchettaEngine::new(store);
             engine.sync().expect("Failed to sync");
-            println!("Synced topics");
+            info!("Synced topics");
         }
     }
 }

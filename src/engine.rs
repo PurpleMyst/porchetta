@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
+use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
 use crate::store::PorchettaStore;
@@ -18,34 +19,44 @@ impl PorchettaEngine {
     }
 
     pub fn edit_manifest(&mut self, editor: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<()> {
+        debug!("Starting manifest edit");
         let manifest_content = self.store.read_manifest()?;
         let new_manifest_content = editor(&manifest_content);
         self.store.write_manifest(&new_manifest_content)?;
+        debug!("Manifest edit completed");
         Ok(())
     }
 
     pub fn sync(&mut self) -> Result<()> {
+        debug!("Starting sync operation");
         let home = std::env::home_dir().context("Could not determine home directory")?;
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
+        info!("Loaded manifest with {} topics", manifest.topics.len());
 
         let hostname = ::hostname::get()
             .context("Could not get hostname")?
             .to_string_lossy()
             .into_owned();
+        debug!("Detected hostname: {}", hostname);
 
         for (name, info) in manifest.topics {
+            debug!("Syncing topic '{}'", name);
+
             // Capture and create system ("our") tree.
             let mut topic_files = HashSet::new();
 
             for p in &info.paths {
                 let abs_path = home.join(p);
                 if abs_path.is_file() {
+                    trace!("Found file: {}", abs_path.display());
                     topic_files.insert(abs_path);
                 } else if abs_path.is_dir() {
+                    trace!("Scanning directory: {}", abs_path.display());
                     let mut queue = VecDeque::new();
                     queue.push_back(abs_path);
                     while let Some(p2) = queue.pop_front() {
                         if p2.is_file() {
+                            trace!("Found file: {}", p2.display());
                             topic_files.insert(p2);
                         } else if p2.is_dir() {
                             for entry in std::fs::read_dir(p2)? {
@@ -65,6 +76,12 @@ impl PorchettaEngine {
                     );
                 }
             }
+
+            debug!(
+                "Topic '{}' has {} files to sync",
+                name,
+                topic_files.len()
+            );
 
             // let Some(mut common_ancestor) = info.paths.iter().cloned().reduce(|a, b| {
             //     let mut c = PathBuf::new();
@@ -126,9 +143,11 @@ impl PorchettaEngine {
                 )?;
             }
             let our_tree_oid = our_tree_editor.write()?;
+            trace!("Built our tree: {}", our_tree_oid);
 
             let their_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_head(&name)? {
+                    trace!("Found their tree from topic head: {}", commit_oid);
                     self.store
                         .repo
                         .find_object(commit_oid)?
@@ -136,14 +155,16 @@ impl PorchettaEngine {
                         .id()
                         .into()
                 } else {
-                    self.store.repo
-                        .empty_tree()
-                        .id()
-                        .into()
+                    debug!("No topic head found, using empty tree");
+                    self.store.repo.empty_tree().id().into()
                 };
 
             let base_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_hostname_head(&name, &hostname)? {
+                    trace!(
+                        "Found base tree from hostname head: {}",
+                        commit_oid
+                    );
                     self.store
                         .repo
                         .find_object(commit_oid)?
@@ -151,10 +172,8 @@ impl PorchettaEngine {
                         .id()
                         .into()
                 } else {
-                    self.store.repo
-                        .empty_tree()
-                        .id()
-                        .into()
+                    debug!("No hostname head found, using empty tree");
+                    self.store.repo.empty_tree().id().into()
                 };
 
             let mut merge_outcome = self.store.repo.merge_trees(
@@ -174,13 +193,14 @@ impl PorchettaEngine {
             )?;
 
             if merge_outcome.has_unresolved_conflicts(Default::default()) {
-                todo!(
-                    "Implement conflict resolution strategy for merge conflicts in topic '{}'",
+                warn!(
+                    "Merge conflicts detected for topic '{}' - resolution not yet implemented",
                     name
                 );
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
+            trace!("Merged tree: {}", merged_tree_oid);
 
             if merged_tree_oid != their_tree_oid {
                 // The merged tree is different from the one in the repo, so we need to create a new commit and update the topic head.
@@ -209,12 +229,18 @@ impl PorchettaEngine {
                 };
                 commit.parents.dedup();
                 let commit_oid = self.store.repo.write_object(commit)?.into();
+                debug!("Created commit: {}", commit_oid);
                 self.store.update_topic_head(&name, commit_oid)?;
+            } else {
+                debug!("Topic '{}' has no changes from repo", name);
             }
 
             if merged_tree_oid != our_tree_oid {
                 // The merged tree is different from our tree, so we need to update the files on the system.
-                todo!("Implement file updates on the system based on the merged tree");
+                warn!(
+                    "Topic '{}' has remote changes - file update not yet implemented",
+                    name
+                );
             }
 
             self.store.update_topic_hostname_head(
@@ -225,9 +251,10 @@ impl PorchettaEngine {
                     .context("Missing topic head for existing topic")?,
             )?;
 
-            println!("Synchronized topic '{}'", name);
+            info!("Synchronized topic '{}'", name);
         }
 
+        debug!("Sync operation completed");
         Ok(())
     }
 }

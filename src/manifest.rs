@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
+use log::{debug, trace};
 use mlua::{Function, Lua, Value};
 
 #[derive(Debug)]
@@ -18,6 +19,10 @@ pub struct Topic {
 
 impl Manifest {
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
+        debug!(
+            "Parsing manifest ({:?} bytes)",
+            manifest_content.len()
+        );
         let lua = Lua::new();
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
 
@@ -27,6 +32,7 @@ impl Manifest {
             .ok_or_else(|| anyhow::anyhow!("Manifest must be a table"))?
             .get::<HashMap<String, HashMap<String, Value>>>("topics")?
         {
+            trace!("Loading topic '{}'", name);
             let paths: Vec<String> = topic
                 .get("paths")
                 .ok_or_else(|| anyhow::anyhow!("Topic must have a 'paths' field"))?
@@ -34,10 +40,12 @@ impl Manifest {
                 .ok_or_else(|| anyhow::anyhow!("'paths' field must be a sequence"))?
                 .sequence_values::<String>()
                 .collect::<mlua::Result<_>>()?;
-            let paths = paths
+            let paths: Vec<PathBuf> = paths
                 .into_iter()
                 .map(|s| std::path::PathBuf::from(s))
                 .collect();
+
+            trace!("Topic '{}' has {} paths", name, paths.len());
 
             let predicate = topic
                 .get("predicate")
@@ -46,6 +54,7 @@ impl Manifest {
             topics.insert(name, Topic { paths, predicate });
         }
 
+        debug!("Manifest loaded with {} topics", topics.len());
         Ok(Manifest { lua, topics })
     }
 }
