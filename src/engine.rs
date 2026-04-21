@@ -1,13 +1,11 @@
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
-use gix::objs::Tree;
 
 use crate::manifest::Manifest;
-use crate::rooted_tree::RootedTree;
 use crate::store::PorchettaStore;
 
 pub struct PorchettaEngine {
@@ -36,45 +34,98 @@ impl PorchettaEngine {
             .into_owned();
 
         for (name, info) in manifest.topics {
-            let Some(mut common_ancestor) = info.paths.iter().cloned().reduce(|a, b| {
-                let mut c = PathBuf::new();
-                for (a_part, b_part) in a.iter().zip(b.iter()) {
-                    if a_part == b_part {
-                        c.push(a_part);
-                    } else {
-                        break;
+            // Capture and create system ("our") tree.
+            let mut topic_files = HashSet::new();
+
+            for p in &info.paths {
+                let abs_path = home.join(p);
+                if abs_path.is_file() {
+                    topic_files.insert(abs_path);
+                } else if abs_path.is_dir() {
+                    let mut queue = VecDeque::new();
+                    queue.push_back(abs_path);
+                    while let Some(p2) = queue.pop_front() {
+                        if p2.is_file() {
+                            topic_files.insert(p2);
+                        } else if p2.is_dir() {
+                            for entry in std::fs::read_dir(p2)? {
+                                queue.push_back(entry?.path());
+                            }
+                        } else {
+                            bail!(
+                                "Path '{}' does not exist or is not a file/directory",
+                                p2.display()
+                            );
+                        }
                     }
+                } else {
+                    bail!(
+                        "Path '{}' does not exist or is not a file/directory",
+                        abs_path.display()
+                    );
                 }
-                c
-            }) else {
-                continue;
-            };
-
-            common_ancestor = home.join(common_ancestor);
-
-            if common_ancestor.is_file() {
-                common_ancestor.pop();
             }
 
-            // XXX: this practically hangs if common_ancestor == home
-            let our_tree = RootedTree::capture(
-                common_ancestor,
-                |_p, c| Ok(c),
-                |p| {
-                    info.paths.iter().any(|tp| {
-                        p.strip_prefix(&home)
-                            .unwrap_or(p)
-                            .components()
-                            .zip(tp.components())
-                            .all(|(a, b)| a == b)
-                    })
-                },
-            )?;
+            // let Some(mut common_ancestor) = info.paths.iter().cloned().reduce(|a, b| {
+            //     let mut c = PathBuf::new();
+            //     for (a_part, b_part) in a.iter().zip(b.iter()) {
+            //         if a_part == b_part {
+            //             c.push(a_part);
+            //         } else {
+            //             break;
+            //         }
+            //     }
+            //     c
+            // }) else {
+            //     continue;
+            // };
+            //
+            // common_ancestor = home.join(common_ancestor);
+            //
+            // if common_ancestor.is_file() {
+            //     common_ancestor.pop();
+            // }
+            //
+            // // XXX: this practically hangs if common_ancestor == home
+            // let our_tree = RootedTree::capture(
+            //     common_ancestor,
+            //     |_p, c| Ok(c),
+            //     |p| {
+            //         info.paths.iter().any(|tp| {
+            //             p.strip_prefix(&home)
+            //                 .unwrap_or(p)
+            //                 .components()
+            //                 .zip(tp.components())
+            //                 .all(|(a, b)| a == b)
+            //         })
+            //     },
+            // )?;
+            //
+            // for (oid, obj) in our_tree.objects.iter() {
+            //     let new_oid = self.store.repo.write_object(obj.clone())?;
+            //     debug_assert_eq!(*oid, ObjectId::from(new_oid));
+            // }
 
-            for (oid, obj) in our_tree.objects.iter() {
-                let new_oid = self.store.repo.write_object(obj.clone())?;
-                debug_assert_eq!(*oid, ObjectId::from(new_oid));
+            let mut our_tree_editor = self
+                .store
+                .repo
+                .edit_tree(self.store.repo.empty_tree().id())?;
+            for file in topic_files {
+                let content = std::fs::read(&file)?;
+                let blob_oid = self.store.repo.write_blob(content)?;
+                let relative_path = file.strip_prefix(&home)?.to_str().with_context(|| {
+                    format!(
+                        "Failed to convert path '{}' to string",
+                        file.strip_prefix(&home).unwrap_or(&file).display()
+                    )
+                })?;
+                our_tree_editor.upsert(
+                    relative_path,
+                    gix::objs::tree::EntryKind::Blob,
+                    blob_oid,
+                )?;
             }
+            let our_tree_oid = our_tree_editor.write()?;
 
             let their_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_head(&name)? {
@@ -85,7 +136,10 @@ impl PorchettaEngine {
                         .id()
                         .into()
                 } else {
-                    self.get_empty_tree_oid()?
+                    self.store.repo
+                        .empty_tree()
+                        .id()
+                        .into()
                 };
 
             let base_tree_oid: ObjectId =
@@ -97,12 +151,15 @@ impl PorchettaEngine {
                         .id()
                         .into()
                 } else {
-                    self.get_empty_tree_oid()?
+                    self.store.repo
+                        .empty_tree()
+                        .id()
+                        .into()
                 };
 
             let mut merge_outcome = self.store.repo.merge_trees(
                 &base_tree_oid,
-                &our_tree.tree_oid,
+                &our_tree_oid,
                 &their_tree_oid,
                 Labels {
                     ancestor: Some(
@@ -155,7 +212,7 @@ impl PorchettaEngine {
                 self.store.update_topic_head(&name, commit_oid)?;
             }
 
-            if merged_tree_oid != our_tree.tree_oid {
+            if merged_tree_oid != our_tree_oid {
                 // The merged tree is different from our tree, so we need to update the files on the system.
                 todo!("Implement file updates on the system based on the merged tree");
             }
@@ -172,10 +229,5 @@ impl PorchettaEngine {
         }
 
         Ok(())
-    }
-
-    fn get_empty_tree_oid(&self) -> Result<ObjectId> {
-        let empty_tree = Tree::empty();
-        Ok(self.store.repo.write_object(empty_tree)?.into())
     }
 }
