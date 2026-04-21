@@ -1,4 +1,6 @@
 use std::collections::{HashSet, VecDeque};
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use gix::ObjectId;
@@ -8,6 +10,16 @@ use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
 use crate::store::PorchettaStore;
+
+enum ApplyOperation {
+    Upsert {
+        relative_path: PathBuf,
+        blob_oid: ObjectId,
+    },
+    Delete {
+        relative_path: PathBuf,
+    },
+}
 
 pub struct PorchettaEngine {
     store: PorchettaStore,
@@ -185,7 +197,9 @@ impl PorchettaEngine {
                 self.store.repo.tree_merge_options()?,
             )?;
 
-            if merge_outcome.has_unresolved_conflicts(Default::default()) {
+            let has_unresolved_conflicts =
+                merge_outcome.has_unresolved_conflicts(Default::default());
+            if has_unresolved_conflicts {
                 warn!(
                     "Merge conflicts detected for topic '{}' - resolution not yet implemented",
                     name
@@ -229,11 +243,26 @@ impl PorchettaEngine {
             }
 
             if merged_tree_oid != our_tree_oid {
-                // The merged tree is different from our tree, so we need to update the files on the system.
-                warn!(
-                    "Topic '{}' has remote changes - file update not yet implemented",
-                    name
-                );
+                if has_unresolved_conflicts {
+                    warn!(
+                        "Skipping apply for topic '{}' due to unresolved merge conflicts",
+                        name
+                    );
+                } else {
+                    let operations = self
+                        .collect_apply_operations(our_tree_oid.into(), merged_tree_oid.into())
+                        .with_context(|| {
+                            format!("Failed to compute apply operations for topic '{}'", name)
+                        })?;
+
+                    self.preflight_apply_operations(&home, &name, &operations)
+                        .with_context(|| {
+                            format!("Pre-flight checks failed for topic '{}'", name)
+                        })?;
+
+                    self.apply_operations(&home, &name, operations)
+                        .with_context(|| format!("Failed to apply changes for topic '{}'", name))?;
+                }
             }
 
             self.store.update_topic_hostname_head(
@@ -249,5 +278,186 @@ impl PorchettaEngine {
 
         debug!("Sync operation completed");
         Ok(())
+    }
+
+    fn collect_apply_operations(
+        &self,
+        our_tree_oid: ObjectId,
+        merged_tree_oid: ObjectId,
+    ) -> Result<Vec<ApplyOperation>> {
+        let our_tree = self.store.repo.find_tree(our_tree_oid)?;
+        let merged_tree = self.store.repo.find_tree(merged_tree_oid)?;
+
+        let mut operations = Vec::new();
+        let mut changes = our_tree.changes()?;
+        changes.options(|options| {
+            options.track_path();
+            options.track_rewrites(None);
+        });
+
+        changes.for_each_to_obtain_tree(&merged_tree, |change| {
+            match change {
+                gix::object::tree::diff::Change::Addition {
+                    location,
+                    entry_mode,
+                    id,
+                    ..
+                } => {
+                    if entry_mode.is_tree() {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+
+                    operations.push(ApplyOperation::Upsert {
+                        relative_path: Self::diff_location_to_path(location)?,
+                        blob_oid: id.detach(),
+                    });
+                }
+                gix::object::tree::diff::Change::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if entry_mode.is_tree() {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+
+                    operations.push(ApplyOperation::Delete {
+                        relative_path: Self::diff_location_to_path(location)?,
+                    });
+                }
+                gix::object::tree::diff::Change::Modification {
+                    location,
+                    entry_mode,
+                    id,
+                    ..
+                } => {
+                    if entry_mode.is_tree() {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+
+                    operations.push(ApplyOperation::Upsert {
+                        relative_path: Self::diff_location_to_path(location)?,
+                        blob_oid: id.detach(),
+                    });
+                }
+                gix::object::tree::diff::Change::Rewrite { .. } => {
+                    bail!("Rewrite operation encountered despite rewrite tracking being disabled");
+                }
+            }
+
+            Ok(ControlFlow::Continue(()))
+        })?;
+
+        Ok(operations)
+    }
+
+    fn preflight_apply_operations(
+        &self,
+        home: &Path,
+        topic_name: &str,
+        operations: &[ApplyOperation],
+    ) -> Result<()> {
+        for operation in operations {
+            match operation {
+                ApplyOperation::Upsert { relative_path, .. } => {
+                    let abs_path = home.join(relative_path);
+
+                    if abs_path.is_dir() {
+                        bail!(
+                            "Topic '{}' cannot write file '{}' because it is a directory",
+                            topic_name,
+                            abs_path.display()
+                        );
+                    }
+
+                    if let Some(parent) = abs_path.parent()
+                        && parent.is_file()
+                    {
+                        bail!(
+                            "Topic '{}' cannot create '{}' because parent '{}' is a file",
+                            topic_name,
+                            abs_path.display(),
+                            parent.display()
+                        );
+                    }
+                }
+                ApplyOperation::Delete { relative_path } => {
+                    let abs_path = home.join(relative_path);
+                    if abs_path.is_dir() {
+                        bail!(
+                            "Topic '{}' cannot delete '{}' as a file because it is a directory",
+                            topic_name,
+                            abs_path.display()
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_operations(
+        &self,
+        home: &Path,
+        topic_name: &str,
+        operations: Vec<ApplyOperation>,
+    ) -> Result<()> {
+        for operation in operations {
+            match operation {
+                ApplyOperation::Upsert {
+                    relative_path,
+                    blob_oid,
+                } => {
+                    let abs_path = home.join(&relative_path);
+
+                    if let Some(parent) = abs_path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!(
+                                "Failed to create parent directory '{}' for topic '{}'",
+                                parent.display(),
+                                topic_name
+                            )
+                        })?;
+                    }
+
+                    let blob = self.store.repo.find_blob(blob_oid).with_context(|| {
+                        format!(
+                            "Failed to read blob '{}' for topic '{}'",
+                            blob_oid, topic_name
+                        )
+                    })?;
+
+                    std::fs::write(&abs_path, &blob.data).with_context(|| {
+                        format!(
+                            "Failed to write '{}' for topic '{}'",
+                            abs_path.display(),
+                            topic_name
+                        )
+                    })?;
+                }
+                ApplyOperation::Delete { relative_path } => {
+                    let abs_path = home.join(relative_path);
+                    if abs_path.exists() {
+                        std::fs::remove_file(&abs_path).with_context(|| {
+                            format!(
+                                "Failed to delete '{}' for topic '{}'",
+                                abs_path.display(),
+                                topic_name
+                            )
+                        })?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn diff_location_to_path(location: &gix::bstr::BStr) -> Result<PathBuf> {
+        let relative_path = std::str::from_utf8(location.as_ref()).with_context(|| {
+            format!("Diff path '{}' is not valid UTF-8", location.to_str_lossy())
+        })?;
+        Ok(PathBuf::from(relative_path))
     }
 }
