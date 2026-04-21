@@ -97,7 +97,10 @@ impl RootedTree {
     }
 
     /// Applies the captured tree to the filesystem, creating files and directories as needed.
-    pub fn apply(mut self, normalize_content: impl Fn(&Path, Vec<u8>) -> Result<Vec<u8>>,) -> Result<()> {
+    pub fn apply(
+        mut self,
+        normalize_content: impl Fn(&Path, Vec<u8>) -> Result<Vec<u8>>,
+    ) -> Result<()> {
         let mut stack = vec![(self.root.clone(), self.tree_oid)];
         while let Some((path, oid)) = stack.pop() {
             let obj = self.objects.remove(&oid).ok_or_else(|| {
@@ -106,7 +109,7 @@ impl RootedTree {
             match obj {
                 Object::Blob(blob) => {
                     fs::create_dir_all(path.parent().unwrap())?;
-                    fs::write(&path, normalize_content(&path, blob.data)? )?;
+                    fs::write(&path, normalize_content(&path, blob.data)?)?;
                 }
                 Object::Tree(tree) => {
                     fs::create_dir_all(&path)?;
@@ -115,7 +118,11 @@ impl RootedTree {
                         stack.push((entry_path, entry.oid.into()));
                     }
                 }
-                _ => bail!("Unexpected object type for OID {} at path {}", oid, path.display()),
+                _ => bail!(
+                    "Unexpected object type for OID {} at path {}",
+                    oid,
+                    path.display()
+                ),
             }
         }
 
@@ -157,7 +164,10 @@ mod tests {
         )?;
 
         // Assert that the initial capture grabbed our objects
-        assert!(!captured_tree.objects.is_empty(), "Tree should have captured objects");
+        assert!(
+            !captured_tree.objects.is_empty(),
+            "Tree should have captured objects"
+        );
 
         // 3. Setup the destination temporary directory to test the `apply` method
         let dest_dir = tempdir()?;
@@ -179,7 +189,10 @@ mod tests {
         assert_eq!(fs::read(&dest_file2)?, b"Hello from the nest");
 
         let dest_deep_dir = dest_root.join("nested").join("deep_empty");
-        assert!(dest_deep_dir.exists() && dest_deep_dir.is_dir(), "deep_empty directory should exist");
+        assert!(
+            dest_deep_dir.exists() && dest_deep_dir.is_dir(),
+            "deep_empty directory should exist"
+        );
 
         Ok(())
     }
@@ -206,7 +219,10 @@ mod tests {
         captured_tree.apply(|_path, content| Ok(content))?;
 
         assert!(dest_root.join("keep.txt").exists());
-        assert!(!dest_root.join("ignore.txt").exists(), "The ignored file should not have roundtripped");
+        assert!(
+            !dest_root.join("ignore.txt").exists(),
+            "The ignored file should not have roundtripped"
+        );
 
         Ok(())
     }

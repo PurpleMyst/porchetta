@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand};
 
-use porchetta::store::PorchettaStore;
 use porchetta::engine::PorchettaEngine;
+use porchetta::store::PorchettaStore;
 
 #[derive(Parser)]
 #[command(name = "porchetta")]
 struct Cli {
-#[command(subcommand)]
+    #[command(subcommand)]
     command: Command,
 }
 
@@ -44,7 +44,8 @@ fn main() {
                         .suffix(".lua")
                         .tempfile()
                         .expect("Failed to create temp file");
-                    std::io::Write::write_all(&mut temp_file, content).expect("Failed to write manifest to temp file");
+                    std::io::Write::write_all(&mut temp_file, content)
+                        .expect("Failed to write manifest to temp file");
                     let status = std::process::Command::new(&editor)
                         .arg(temp_file.path())
                         .status()

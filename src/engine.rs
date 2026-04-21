@@ -117,7 +117,10 @@ impl PorchettaEngine {
             )?;
 
             if merge_outcome.has_unresolved_conflicts(Default::default()) {
-                todo!("Implement conflict resolution strategy for merge conflicts in topic '{}'", name);
+                todo!(
+                    "Implement conflict resolution strategy for merge conflicts in topic '{}'",
+                    name
+                );
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
@@ -135,7 +138,11 @@ impl PorchettaEngine {
                         .store
                         .get_topic_head(&name)?
                         .into_iter()
-                        .chain(self.store.get_topic_hostname_head(&name, &hostname)?.into_iter())
+                        .chain(
+                            self.store
+                                .get_topic_hostname_head(&name, &hostname)?
+                                .into_iter(),
+                        )
                         .collect(),
                     message: format!("Sync topic '{}'", name).into(),
                     author: signature.clone(),
@@ -153,9 +160,13 @@ impl PorchettaEngine {
                 todo!("Implement file updates on the system based on the merged tree");
             }
 
-            self.store
-                .update_topic_hostname_head(&name, &hostname, self.store.get_topic_head(&name)?
-                    .context("Missing topic head for existing topic")?)?;
+            self.store.update_topic_hostname_head(
+                &name,
+                &hostname,
+                self.store
+                    .get_topic_head(&name)?
+                    .context("Missing topic head for existing topic")?,
+            )?;
 
             println!("Synchronized topic '{}'", name);
         }

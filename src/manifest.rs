@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
 use mlua::{Function, Lua, Value};
@@ -73,7 +70,8 @@ mod tests {
                 }
             }
         }"#;
-        let manifest = Manifest::load(manifest_content.as_bytes()).expect("Failed to load manifest");
+        let manifest =
+            Manifest::load(manifest_content.as_bytes()).expect("Failed to load manifest");
         assert_eq!(manifest.topics.len(), 3);
         assert_eq!(manifest.topics["topic1"].paths.len(), 2);
         assert_eq!(manifest.topics["topic2"].paths.len(), 1);
