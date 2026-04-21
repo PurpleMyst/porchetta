@@ -2,8 +2,6 @@ use std::env::home_dir;
 
 use anyhow::{Context, Result};
 
-use crate::manifest::Manifest;
-
 #[derive(Debug)]
 pub struct PorchettaStore {
     pub repo: gix::Repository,
@@ -28,8 +26,8 @@ impl PorchettaStore {
         Ok(home.join(".porchetta"))
     }
 
-    pub fn read_manifest(&self) -> Result<Manifest> {
-        let manifest_content = self
+    pub fn read_manifest(&self) -> Result<Vec<u8>> {
+        Ok(self
             .repo
             .find_reference("heads/manifest")?
             .peel_to_tree()?
@@ -37,9 +35,7 @@ impl PorchettaStore {
             .context("Manifest entry not found in tree")?
             .object()?
             .try_into_blob()?
-            .take_data();
-
-        Manifest::load(&manifest_content)
+            .take_data())
     }
 
     pub fn write_manifest(&self, manifest_content: &[u8]) -> Result<()> {
@@ -97,7 +93,8 @@ impl PorchettaStore {
     }
 
     pub fn get_topic_head(&self, topic: &str) -> Result<Option<gix::ObjectId>> {
-        self.get_branch_head(topic)
+        let branch_name = format!("topic/{}", topic);
+        self.get_branch_head(&branch_name)
     }
 
     pub fn get_topic_hostname_head(
@@ -105,7 +102,7 @@ impl PorchettaStore {
         topic: &str,
         hostname: &str,
     ) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("{}/{}", topic, hostname);
+        let branch_name = format!("system/{}/{topic}", hostname);
         self.get_branch_head(&branch_name)
     }
 
@@ -117,11 +114,26 @@ impl PorchettaStore {
             gix::refs::transaction::PreviousValue::Any,
             format!("Update head of branch {} to {}", branch, new_head),
         )?;
+        // self.repo.edit_reference(RefEdit {
+        //     name: FullName::try_from(reference_name)
+        //         .context("Invalid reference name")?,
+        //     change: gix::refs::transaction::Change::Update {
+        //         log: LogChange {
+        //             mode: RefLog::AndReference,
+        //             force_create_reflog: false,
+        //             message: format!("Update head of branch {} to {}", branch, new_head).into(),
+        //         },
+        //         expected: gix::refs::transaction::PreviousValue::Any,
+        //         new: new_head.into(),
+        //     },
+        //     deref: false,
+        // })?;
         Ok(())
     }
 
     pub fn update_topic_head(&self, topic: &str, new_head: gix::ObjectId) -> Result<()> {
-        self.update_branch_head(topic, new_head)
+        let branch_name = format!("topic/{topic}");
+        self.update_branch_head(&branch_name, new_head)
     }
 
     pub fn update_topic_hostname_head(
@@ -130,7 +142,7 @@ impl PorchettaStore {
         hostname: &str,
         new_head: gix::ObjectId,
     ) -> Result<()> {
-        let branch_name = format!("{}/{}", topic, hostname);
+        let branch_name = format!("system/{hostname}/{topic}");
         self.update_branch_head(&branch_name, new_head)
     }
 }

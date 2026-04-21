@@ -31,10 +31,10 @@ impl RootedTree {
                 continue;
             }
 
-            let n = entry.path()
-            .strip_prefix(&root)?
-            .components().count().saturating_sub(1);
-            eprintln!("{}{}", "  ".repeat(n), entry.path().display());
+            // let n = entry.path()
+            // .strip_prefix(&root)?
+            // .components().count().saturating_sub(1);
+            // eprintln!("{}{}", "  ".repeat(n), entry.path().display());
 
             let ty = entry.file_type();
             let key = entry.path().strip_prefix(&root)?.to_path_buf();
@@ -85,6 +85,7 @@ impl RootedTree {
                 bail!("Unsupported file type: {}", entry.path().display());
             }
         }
+
         Ok(Self {
             root,
             tree_oid: tree_entries
