@@ -1,5 +1,3 @@
-## Project-Specific Guidelines
-
 ### Commit Convention
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
