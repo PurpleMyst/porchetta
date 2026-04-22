@@ -2,6 +2,7 @@ use std::env::home_dir;
 
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
+use smallvec::SmallVec;
 
 #[derive(Debug)]
 pub struct PorchettaStore {
@@ -9,28 +10,43 @@ pub struct PorchettaStore {
 }
 
 impl PorchettaStore {
+    /// Initializes a new Porchetta store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store path cannot be determined or if any git operation fails.
     pub fn init() -> Result<Self> {
         let repo = gix::init_bare(Self::store_path()?)?;
-        info!("Initialized Porchetta store at {:?}", Self::store_path()?);
+        info!("Initialized Porchetta store at {}", Self::store_path()?.display());
         let manifest_content = b"return { topics = {} }\n";
         let this = Self { repo };
         this.write_manifest(manifest_content)?;
         Ok(this)
     }
 
+    /// Loads the Porchetta store from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store path cannot be determined or if the store cannot be opened.
     pub fn load() -> Result<Self> {
         let repo = gix::open(Self::store_path()?)?;
-        info!("Loaded Porchetta store from {:?}", Self::store_path()?);
+        info!("Loaded Porchetta store from {}", Self::store_path()?.display());
         Ok(Self { repo })
     }
 
     fn store_path() -> Result<std::path::PathBuf> {
         let home = home_dir().context("Could not determine home directory")?;
         let path = home.join(".porchetta");
-        trace!("Store path resolved to {path:?}");
+        trace!("Store path resolved to {}", path.display());
         Ok(path)
     }
 
+    /// Reads the manifest from the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest reference cannot be found or read.
     pub fn read_manifest(&self) -> Result<Vec<u8>> {
         debug!("Reading manifest from store");
         let content = self
@@ -47,6 +63,11 @@ impl PorchettaStore {
         Ok(content)
     }
 
+    /// Writes the manifest to the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing the manifest blob or updating the reference fails.
     pub fn write_manifest(&self, manifest_content: &[u8]) -> Result<()> {
         debug!(
             "Writing manifest to store ({} bytes)",
@@ -74,7 +95,7 @@ impl PorchettaStore {
                 .repo
                 .try_find_reference("heads/manifest")?
                 // XXX: ↓ We're not handling the id() error here, should we?
-                .map_or(Default::default(), |r| [r.target().id().to_owned()].into()),
+                .map_or(SmallVec::default(), |r| [r.target().id().to_owned()].into()),
             author: signature.clone(),
             committer: signature,
             encoding: None,
@@ -110,11 +131,21 @@ impl PorchettaStore {
         }
     }
 
+    /// Gets the head commit for a topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic branch cannot be read.
     pub fn get_topic_head(&self, topic: &str) -> Result<Option<gix::ObjectId>> {
         let branch_name = format!("topic/{topic}");
         self.get_branch_head(&branch_name)
     }
 
+    /// Gets the head commit for a topic on the current hostname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic hostname branch cannot be read.
     pub fn get_topic_hostname_head(
         &self,
         topic: &str,
@@ -135,12 +166,22 @@ impl PorchettaStore {
         Ok(())
     }
 
+    /// Updates the head commit for a topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic branch cannot be updated.
     pub fn update_topic_head(&self, topic: &str, new_head: gix::ObjectId) -> Result<()> {
         let branch_name = format!("topic/{topic}");
         debug!("Updating topic head for '{topic}' to {new_head}");
         self.update_branch_head(&branch_name, new_head)
     }
 
+    /// Updates the head commit for a topic on the current hostname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic hostname branch cannot be updated.
     pub fn update_topic_hostname_head(
         &self,
         topic: &str,

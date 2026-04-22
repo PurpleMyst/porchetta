@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail, ensure};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
+use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
@@ -30,6 +31,11 @@ impl PorchettaEngine {
         Self { store }
     }
 
+    /// Edits the manifest using the provided editor function.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or writing the manifest fails.
     pub fn edit_manifest(&mut self, editor: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<()> {
         debug!("Starting manifest edit");
         let manifest_content = self.store.read_manifest()?;
@@ -39,6 +45,14 @@ impl PorchettaEngine {
         Ok(())
     }
 
+    /// Synchronizes all topics between the local filesystem and the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined, if the manifest
+    /// cannot be loaded, if hostname cannot be obtained, or if any file system operation,
+    /// git operation, or conflict resolution fails.
+    #[allow(clippy::too_many_lines)]
     pub fn sync(&mut self) -> Result<()> {
         debug!("Starting sync operation");
         let home = std::env::home_dir().context("Could not determine home directory")?;
@@ -157,7 +171,7 @@ impl PorchettaEngine {
             )?;
 
             for conflict in &merge_outcome.conflicts {
-                if !conflict.is_unresolved(Default::default()) {
+                if !conflict.is_unresolved(TreatAsUnresolved::default()) {
                     continue;
                 }
 
@@ -207,7 +221,7 @@ impl PorchettaEngine {
                         format!("Failed to compute apply operations for topic '{name}'")
                     })?;
 
-                self.preflight_apply_operations(&home, &name, &operations)
+                Self::preflight_apply_operations(&home, &name, &operations)
                     .with_context(|| {
                         format!("Pre-flight checks failed for topic '{name}'")
                     })?;
@@ -247,7 +261,7 @@ impl PorchettaEngine {
         if Self::is_blob_level_conflict(conflict, ours_change, theirs_change) {
             self.resolve_blob_level_conflict(conflict, merged_tree)?;
         } else {
-            self.resolve_tree_level_conflict(conflict, merged_tree)?;
+            Self::resolve_tree_level_conflict(conflict, merged_tree)?;
         }
 
         Ok(())
@@ -282,7 +296,6 @@ impl PorchettaEngine {
     }
 
     fn resolve_tree_level_conflict(
-        &self,
         conflict: &gix::merge::tree::Conflict,
         merged_tree: &mut gix::object::tree::Editor<'_>,
     ) -> Result<()> {
@@ -544,6 +557,12 @@ impl PorchettaEngine {
                     entry_mode,
                     id,
                     ..
+                }
+                | gix::object::tree::diff::Change::Modification {
+                    location,
+                    entry_mode,
+                    id,
+                    ..
                 } => {
                     if entry_mode.is_tree() {
                         return Ok(ControlFlow::Continue(()));
@@ -567,21 +586,6 @@ impl PorchettaEngine {
                         relative_path: Self::diff_location_to_path(location)?,
                     });
                 }
-                gix::object::tree::diff::Change::Modification {
-                    location,
-                    entry_mode,
-                    id,
-                    ..
-                } => {
-                    if entry_mode.is_tree() {
-                        return Ok(ControlFlow::Continue(()));
-                    }
-
-                    operations.push(ApplyOperation::Upsert {
-                        relative_path: Self::diff_location_to_path(location)?,
-                        blob_oid: id.detach(),
-                    });
-                }
                 gix::object::tree::diff::Change::Rewrite { .. } => {
                     bail!("Rewrite operation encountered despite rewrite tracking being disabled");
                 }
@@ -594,7 +598,6 @@ impl PorchettaEngine {
     }
 
     fn preflight_apply_operations(
-        &self,
         home: &Path,
         topic_name: &str,
         operations: &[ApplyOperation],

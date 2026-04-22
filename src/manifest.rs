@@ -18,6 +18,11 @@ pub struct Topic {
 }
 
 impl Manifest {
+    /// Loads a manifest from the given manifest content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is not a valid table or if any required fields are missing.
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();

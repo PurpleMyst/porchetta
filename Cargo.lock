@@ -1863,6 +1863,7 @@ dependencies = [
  "log",
  "mlua",
  "simple_logger",
+ "smallvec",
  "tempfile",
 ]
 
