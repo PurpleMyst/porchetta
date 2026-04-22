@@ -35,7 +35,12 @@ impl PorchettaStore {
         Ok(Self { repo })
     }
 
-    fn store_path() -> Result<std::path::PathBuf> {
+    /// Returns the path to the Porchetta store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined.
+    pub fn store_path() -> Result<std::path::PathBuf> {
         let home = home_dir().context("Could not determine home directory")?;
         let path = home.join(".porchetta");
         trace!("Store path resolved to {}", path.display());

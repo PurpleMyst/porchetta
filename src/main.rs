@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
+use porchetta::manifest::Manifest;
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
 
@@ -57,14 +58,26 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Init => {
-            PorchettaStore::init().context("Failed to initialize store")?;
+            let _store = PorchettaStore::init().context("Failed to initialize store")?;
             ui::success("Initialized Porchetta store");
+            ui::muted(&format!("  {}", PorchettaStore::store_path()?.display()));
         }
         Command::Show => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let manifest = store.read_manifest().context("Failed to load manifest")?;
+            let manifest_bytes = store.read_manifest().context("Failed to load manifest")?;
             ui::header("Manifest");
-            ui::manifest_block(&String::from_utf8_lossy(&manifest));
+            ui::manifest_block(&String::from_utf8_lossy(&manifest_bytes));
+
+            if cli.verbose {
+                let manifest = Manifest::load(&manifest_bytes).context("Failed to parse manifest")?;
+                ui::info(&format!("{} topics", manifest.topics.len()));
+                for (name, topic) in &manifest.topics {
+                    ui::bullet(&format!("{name} ({} paths)", topic.paths.len()));
+                    for path in &topic.paths {
+                        ui::muted(&format!("    {}", path.display()));
+                    }
+                }
+            }
         }
         Command::Edit => {
             let store = PorchettaStore::load().context("Failed to load store")?;
@@ -97,7 +110,8 @@ fn main() -> Result<()> {
         Command::Sync => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
-            engine.sync().context("Failed to sync")?;
+            ui::header("Syncing topics");
+            engine.sync(cli.verbose).context("Failed to sync")?;
             ui::success("All topics synchronized");
         }
     }

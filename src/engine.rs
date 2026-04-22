@@ -11,6 +11,7 @@ use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
 use crate::store::PorchettaStore;
+use crate::ui;
 
 enum ApplyOperation {
     Upsert {
@@ -53,9 +54,9 @@ impl PorchettaEngine {
     /// cannot be loaded, if hostname cannot be obtained, or if any file system operation,
     /// git operation, or conflict resolution fails.
     #[allow(clippy::too_many_lines)]
-    pub fn sync(&mut self) -> Result<()> {
+    pub fn sync(&mut self, verbose: bool) -> Result<()> {
         debug!("Starting sync operation");
-        let home = std::env::home_dir().context("Could not determine home directory")?;
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
@@ -103,7 +104,12 @@ impl PorchettaEngine {
                 }
             }
 
-            debug!("Topic '{}' has {} files to sync", name, topic_files.len());
+            let file_count = topic_files.len();
+            debug!("Topic '{name}' has {file_count} files to sync");
+            if verbose {
+                ui::info(&format!("Syncing topic '{name}'"));
+                ui::bullet(&format!("{file_count} files scanned"));
+            }
             let mut our_tree_editor = self
                 .store
                 .repo
@@ -181,10 +187,10 @@ impl PorchettaEngine {
             let merged_tree_oid = merge_outcome.tree.write()?;
             trace!("Merged tree: {merged_tree_oid}");
 
-            if merged_tree_oid == their_tree_oid {
-                debug!("Topic '{name}' has no changes from repo");
-            } else {
-                // The merged tree is different from the one in the repo, so we need to create a new commit and update the topic head.
+            let pushed = merged_tree_oid != their_tree_oid;
+            let pulled = merged_tree_oid != our_tree_oid;
+
+            if pushed {
                 let signature = gix::actor::Signature {
                     name: "Porchetta".into(),
                     email: "".into(),
@@ -210,16 +216,24 @@ impl PorchettaEngine {
                 };
                 commit.parents.dedup();
                 let commit_oid = self.store.repo.write_object(commit)?.into();
+                if verbose {
+                    ui::bullet(&format!("pushed to repo ({commit_oid})"));
+                }
                 debug!("Created commit: {commit_oid}");
                 self.store.update_topic_head(&name, commit_oid)?;
+            } else {
+                debug!("Topic '{name}' has no changes from repo");
             }
 
-            if merged_tree_oid != our_tree_oid {
+            if pulled {
                 let operations = self
                     .collect_apply_operations(our_tree_oid.into(), merged_tree_oid.into())
                     .with_context(|| {
                         format!("Failed to compute apply operations for topic '{name}'")
                     })?;
+                if verbose {
+                    ui::bullet(&format!("applied {} change(s) to system", operations.len()));
+                }
 
                 Self::preflight_apply_operations(&home, &name, &operations)
                     .with_context(|| {
@@ -229,6 +243,17 @@ impl PorchettaEngine {
                 self.apply_operations(&home, &name, operations)
                     .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
             }
+
+            let status = if pushed && pulled {
+                "synced"
+            } else if pushed {
+                "pushed"
+            } else if pulled {
+                "applied"
+            } else {
+                "unchanged"
+            };
+            ui::bullet(&format!("{name} — {status}"));
 
             self.store.update_topic_hostname_head(
                 &name,
