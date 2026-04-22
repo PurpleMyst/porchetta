@@ -27,7 +27,7 @@ impl PorchettaStore {
     fn store_path() -> Result<std::path::PathBuf> {
         let home = home_dir().context("Could not determine home directory")?;
         let path = home.join(".porchetta");
-        trace!("Store path resolved to {:?}", path);
+        trace!("Store path resolved to {path:?}");
         Ok(path)
     }
 
@@ -43,7 +43,7 @@ impl PorchettaStore {
             .try_into_blob()?
             .take_data();
         let len = content.len();
-        debug!("Successfully read manifest ({} bytes)", len);
+        debug!("Successfully read manifest ({len} bytes)");
         Ok(content)
     }
 
@@ -92,8 +92,8 @@ impl PorchettaStore {
     }
 
     fn get_branch_head(&self, branch: &str) -> Result<Option<gix::ObjectId>> {
-        let reference_name = format!("refs/heads/{}", branch);
-        trace!("Looking up branch head for '{}'", reference_name);
+        let reference_name = format!("refs/heads/{branch}");
+        trace!("Looking up branch head for '{reference_name}'");
         match self.repo.find_reference(&reference_name) {
             Ok(reference) => Ok(Some(
                 reference
@@ -103,7 +103,7 @@ impl PorchettaStore {
                     .to_owned(),
             )),
             Err(gix::reference::find::existing::Error::NotFound { .. }) => {
-                debug!("Branch '{}' not found", reference_name);
+                debug!("Branch '{reference_name}' not found");
                 Ok(None)
             }
             Err(e) => Err(e.into()),
@@ -111,7 +111,7 @@ impl PorchettaStore {
     }
 
     pub fn get_topic_head(&self, topic: &str) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("topic/{}", topic);
+        let branch_name = format!("topic/{topic}");
         self.get_branch_head(&branch_name)
     }
 
@@ -120,24 +120,24 @@ impl PorchettaStore {
         topic: &str,
         hostname: &str,
     ) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("system/{}/{topic}", hostname);
+        let branch_name = format!("system/{hostname}/{topic}");
         self.get_branch_head(&branch_name)
     }
 
     fn update_branch_head(&self, branch: &str, new_head: gix::ObjectId) -> Result<()> {
-        let reference_name = format!("refs/heads/{}", branch);
+        let reference_name = format!("refs/heads/{branch}");
         self.repo.reference(
             reference_name.as_str(),
             new_head,
             gix::refs::transaction::PreviousValue::Any,
-            format!("Update head of branch {} to {}", branch, new_head),
+            format!("Update head of branch {branch} to {new_head}"),
         )?;
         Ok(())
     }
 
     pub fn update_topic_head(&self, topic: &str, new_head: gix::ObjectId) -> Result<()> {
         let branch_name = format!("topic/{topic}");
-        debug!("Updating topic head for '{}' to {}", topic, new_head);
+        debug!("Updating topic head for '{topic}' to {new_head}");
         self.update_branch_head(&branch_name, new_head)
     }
 
@@ -149,8 +149,7 @@ impl PorchettaStore {
     ) -> Result<()> {
         let branch_name = format!("system/{hostname}/{topic}");
         debug!(
-            "Updating topic hostname head for '{hostname}/{topic}' to {}",
-            new_head
+            "Updating topic hostname head for '{hostname}/{topic}' to {new_head}"
         );
         self.update_branch_head(&branch_name, new_head)
     }

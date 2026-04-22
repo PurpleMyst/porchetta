@@ -49,10 +49,10 @@ impl PorchettaEngine {
             .context("Could not get hostname")?
             .to_string_lossy()
             .into_owned();
-        debug!("Detected hostname: {}", hostname);
+        debug!("Detected hostname: {hostname}");
 
         for (name, info) in manifest.topics {
-            debug!("Syncing topic '{}'", name);
+            debug!("Syncing topic '{name}'");
 
             // Capture and create system ("our") tree.
             let mut topic_files = HashSet::new();
@@ -110,11 +110,11 @@ impl PorchettaEngine {
                 )?;
             }
             let our_tree_oid = our_tree_editor.write()?;
-            trace!("Built our tree: {}", our_tree_oid);
+            trace!("Built our tree: {our_tree_oid}");
 
             let their_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_head(&name)? {
-                    trace!("Found their tree from topic head: {}", commit_oid);
+                    trace!("Found their tree from topic head: {commit_oid}");
                     self.store
                         .repo
                         .find_object(commit_oid)?
@@ -128,7 +128,7 @@ impl PorchettaEngine {
 
             let base_tree_oid: ObjectId =
                 if let Some(commit_oid) = self.store.get_topic_hostname_head(&name, &hostname)? {
-                    trace!("Found base tree from hostname head: {}", commit_oid);
+                    trace!("Found base tree from hostname head: {commit_oid}");
                     self.store
                         .repo
                         .find_object(commit_oid)?
@@ -141,17 +141,17 @@ impl PorchettaEngine {
                 };
 
             let mut merge_outcome = self.store.repo.merge_trees(
-                &base_tree_oid,
-                &our_tree_oid,
-                &their_tree_oid,
+                base_tree_oid,
+                our_tree_oid,
+                their_tree_oid,
                 Labels {
                     ancestor: Some(
-                        gix::bstr::BString::from(format!("{} (last applied)", name)).as_bstr(),
+                        gix::bstr::BString::from(format!("{name} (last applied)")).as_bstr(),
                     ),
                     current: Some(
-                        gix::bstr::BString::from(format!("{} (on system)", name)).as_bstr(),
+                        gix::bstr::BString::from(format!("{name} (on system)")).as_bstr(),
                     ),
-                    other: Some(gix::bstr::BString::from(format!("{} (in repo)", name)).as_bstr()),
+                    other: Some(gix::bstr::BString::from(format!("{name} (in repo)")).as_bstr()),
                 },
                 self.store.repo.tree_merge_options()?,
             )?;
@@ -165,9 +165,11 @@ impl PorchettaEngine {
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
-            trace!("Merged tree: {}", merged_tree_oid);
+            trace!("Merged tree: {merged_tree_oid}");
 
-            if merged_tree_oid != their_tree_oid {
+            if merged_tree_oid == their_tree_oid {
+                debug!("Topic '{name}' has no changes from repo");
+            } else {
                 // The merged tree is different from the one in the repo, so we need to create a new commit and update the topic head.
                 let signature = gix::actor::Signature {
                     name: "Porchetta".into(),
@@ -186,7 +188,7 @@ impl PorchettaEngine {
                                 .into_iter(),
                         )
                         .collect(),
-                    message: format!("Sync topic '{}'", name).into(),
+                    message: format!("Sync topic '{name}'").into(),
                     author: signature.clone(),
                     committer: signature,
                     encoding: None,
@@ -194,26 +196,24 @@ impl PorchettaEngine {
                 };
                 commit.parents.dedup();
                 let commit_oid = self.store.repo.write_object(commit)?.into();
-                debug!("Created commit: {}", commit_oid);
+                debug!("Created commit: {commit_oid}");
                 self.store.update_topic_head(&name, commit_oid)?;
-            } else {
-                debug!("Topic '{}' has no changes from repo", name);
             }
 
             if merged_tree_oid != our_tree_oid {
                 let operations = self
                     .collect_apply_operations(our_tree_oid.into(), merged_tree_oid.into())
                     .with_context(|| {
-                        format!("Failed to compute apply operations for topic '{}'", name)
+                        format!("Failed to compute apply operations for topic '{name}'")
                     })?;
 
                 self.preflight_apply_operations(&home, &name, &operations)
                     .with_context(|| {
-                        format!("Pre-flight checks failed for topic '{}'", name)
+                        format!("Pre-flight checks failed for topic '{name}'")
                     })?;
 
                 self.apply_operations(&home, &name, operations)
-                    .with_context(|| format!("Failed to apply changes for topic '{}'", name))?;
+                    .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
             }
 
             self.store.update_topic_hostname_head(
@@ -224,7 +224,7 @@ impl PorchettaEngine {
                     .context("Missing topic head for existing topic")?,
             )?;
 
-            info!("Synchronized topic '{}'", name);
+            info!("Synchronized topic '{name}'");
         }
 
         debug!("Sync operation completed");
@@ -443,7 +443,7 @@ impl PorchettaEngine {
             .store
             .repo
             .find_blob(blob_oid)
-            .with_context(|| format!("Failed to read merged blob '{}' for conflict", blob_oid))?;
+            .with_context(|| format!("Failed to read merged blob '{blob_oid}' for conflict"))?;
 
         let tempfile = tempfile::NamedTempFile::new()
             .context("Failed to create temporary file for merge conflict")?;
@@ -665,8 +665,7 @@ impl PorchettaEngine {
 
                     let blob = self.store.repo.find_blob(blob_oid).with_context(|| {
                         format!(
-                            "Failed to read blob '{}' for topic '{}'",
-                            blob_oid, topic_name
+                            "Failed to read blob '{blob_oid}' for topic '{topic_name}'"
                         )
                     })?;
 

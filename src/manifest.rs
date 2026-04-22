@@ -29,7 +29,7 @@ impl Manifest {
             .ok_or_else(|| anyhow::anyhow!("Manifest must be a table"))?
             .get::<HashMap<String, HashMap<String, Value>>>("topics")?
         {
-            trace!("Loading topic '{}'", name);
+            trace!("Loading topic '{name}'");
             let paths: Vec<String> = topic
                 .get("paths")
                 .ok_or_else(|| anyhow::anyhow!("Topic must have a 'paths' field"))?
@@ -39,7 +39,7 @@ impl Manifest {
                 .collect::<mlua::Result<_>>()?;
             let paths: Vec<PathBuf> = paths
                 .into_iter()
-                .map(|s| std::path::PathBuf::from(s))
+                .map(std::path::PathBuf::from)
                 .collect();
 
             trace!("Topic '{}' has {} paths", name, paths.len());
