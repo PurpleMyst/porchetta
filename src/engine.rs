@@ -261,7 +261,52 @@ impl PorchettaEngine {
                 }
 
                 let Some(cm) = conflict.content_merge() else {
-                    bail!("Expected content merge for conflict {conflict:?}, but got none");
+                    use inquire::Select;
+                    let our_location = conflict.ours.location();
+                    let their_location = conflict.theirs.location();
+                    let location = if our_location == their_location {
+                        our_location
+                    } else {
+                        our_location // or their_location depending on resolution
+                    };
+                    let location_str = location.to_str_lossy();
+
+                    warn!("Encountered a tree conflict at '{location_str}'.");
+                    debug!("Conflict resolution failure: {:?}", conflict.resolution);
+
+                    let options = vec!["Keep local (ours)", "Keep remote (theirs)"];
+                    let choice = Select::new(
+                        &format!("How do you want to resolve the conflict for '{location_str}'?"),
+                        options,
+                    )
+                    .prompt()
+                    .context("User canceled conflict resolution")?;
+
+                    let (ours_change, theirs_change) = conflict.changes_in_resolution();
+                    
+                    let survivor = match choice {
+                        "Keep local (ours)" => ours_change,
+                        "Keep remote (theirs)" => theirs_change,
+                        _ => bail!("Invalid resolution choice"),
+                    };
+
+                    match survivor {
+                        gix::diff::tree_with_rewrites::Change::Addition { location, entry_mode, id, .. }
+                        | gix::diff::tree_with_rewrites::Change::Modification { location, entry_mode, id, .. } => {
+                            merge_outcome.tree.upsert(
+                                Self::diff_location_to_path(location.as_ref())?.to_str().unwrap(),
+                                (*entry_mode).into(),
+                                *id,
+                            )?;
+                        }
+                        gix::diff::tree_with_rewrites::Change::Deletion { .. } => {
+                            // Do nothing; it's a deletion.
+                        }
+                        gix::diff::tree_with_rewrites::Change::Rewrite { .. } => {
+                            bail!("Rewrite operation encountered during conflict resolution");
+                        }
+                    }
+                    continue;
                 };
 
                 let blob = self
