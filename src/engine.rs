@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
@@ -10,62 +10,6 @@ use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
 use crate::store::PorchettaStore;
-
-/*
-for conflict in &outcome.conflicts {
-           if conflict.resolution.is_ok() {
-               continue; // Already resolved
-           }
-
-           let (ours_change, their_change) = conflict.changes_in_resolution();
-           let path = ours_change.location();
-           let entries = conflict.entries(); // [base, ours, theirs]
-
-           // Read blob contents
-           let base_content = entries[0].as_ref()
-               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
-               .transpose()?.unwrap_or_default();
-
-           let ours_content = entries[1].as_ref()
-               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
-               .transpose()?.unwrap_or_default();
-
-           let theirs_content = entries[2].as_ref()
-               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
-               .transpose()?.unwrap_or_default();
-
-           // Generate conflict markers
-           let mut output = vec![];
-           let resolution = builtin_driver::text(
-               &mut output,
-               &mut Default::default(),
-               Labels {
-                   ancestor: Some("base".into()),
-                   current: Some("HEAD".into()),
-                   other: Some("feature".into()),
-               },
-               &ours_content,
-               &base_content,
-               &theirs_content,
-               builtin_driver::text::Options {
-                   diff_algorithm: imara_diff::Algorithm::Myers,
-                   conflict: builtin_driver::text::Conflict::Keep {
-                       style: ConflictStyle::Merge,
-                       marker_size: 7.try_into().unwrap(),
-                   },
-               },
-           );
-
-           // Write to worktree
-           let file_path = workdir.join(path.as_ref());
-           if let Some(parent) = file_path.parent() {
-               std::fs::create_dir_all(parent)?;
-           }
-           std::fs::write(&file_path, &output)?;
-
-           println!("Wrote conflict markers to: {}", path);
-       }
- */
 
 enum ApplyOperation {
     Upsert {
@@ -146,47 +90,6 @@ impl PorchettaEngine {
             }
 
             debug!("Topic '{}' has {} files to sync", name, topic_files.len());
-
-            // let Some(mut common_ancestor) = info.paths.iter().cloned().reduce(|a, b| {
-            //     let mut c = PathBuf::new();
-            //     for (a_part, b_part) in a.iter().zip(b.iter()) {
-            //         if a_part == b_part {
-            //             c.push(a_part);
-            //         } else {
-            //             break;
-            //         }
-            //     }
-            //     c
-            // }) else {
-            //     continue;
-            // };
-            //
-            // common_ancestor = home.join(common_ancestor);
-            //
-            // if common_ancestor.is_file() {
-            //     common_ancestor.pop();
-            // }
-            //
-            // // XXX: this practically hangs if common_ancestor == home
-            // let our_tree = RootedTree::capture(
-            //     common_ancestor,
-            //     |_p, c| Ok(c),
-            //     |p| {
-            //         info.paths.iter().any(|tp| {
-            //             p.strip_prefix(&home)
-            //                 .unwrap_or(p)
-            //                 .components()
-            //                 .zip(tp.components())
-            //                 .all(|(a, b)| a == b)
-            //         })
-            //     },
-            // )?;
-            //
-            // for (oid, obj) in our_tree.objects.iter() {
-            //     let new_oid = self.store.repo.write_object(obj.clone())?;
-            //     debug_assert_eq!(*oid, ObjectId::from(new_oid));
-            // }
-
             let mut our_tree_editor = self
                 .store
                 .repo
@@ -254,105 +157,11 @@ impl PorchettaEngine {
             )?;
 
             for conflict in &merge_outcome.conflicts {
-                use std::io::Write;
-
                 if !conflict.is_unresolved(Default::default()) {
                     continue;
                 }
 
-                let Some(cm) = conflict.content_merge() else {
-                    use inquire::Select;
-                    let our_location = conflict.ours.location();
-                    let their_location = conflict.theirs.location();
-                    let location = if our_location == their_location {
-                        our_location
-                    } else {
-                        our_location // or their_location depending on resolution
-                    };
-                    let location_str = location.to_str_lossy();
-
-                    warn!("Encountered a tree conflict at '{location_str}'.");
-                    debug!("Conflict resolution failure: {:?}", conflict.resolution);
-
-                    let options = vec!["Keep local (ours)", "Keep remote (theirs)"];
-                    let choice = Select::new(
-                        &format!("How do you want to resolve the conflict for '{location_str}'?"),
-                        options,
-                    )
-                    .prompt()
-                    .context("User canceled conflict resolution")?;
-
-                    let (ours_change, theirs_change) = conflict.changes_in_resolution();
-                    
-                    let survivor = match choice {
-                        "Keep local (ours)" => ours_change,
-                        "Keep remote (theirs)" => theirs_change,
-                        _ => bail!("Invalid resolution choice"),
-                    };
-
-                    match survivor {
-                        gix::diff::tree_with_rewrites::Change::Addition { location, entry_mode, id, .. }
-                        | gix::diff::tree_with_rewrites::Change::Modification { location, entry_mode, id, .. } => {
-                            merge_outcome.tree.upsert(
-                                Self::diff_location_to_path(location.as_ref())?.to_str().unwrap(),
-                                (*entry_mode).into(),
-                                *id,
-                            )?;
-                        }
-                        gix::diff::tree_with_rewrites::Change::Deletion { .. } => {
-                            // Do nothing; it's a deletion.
-                        }
-                        gix::diff::tree_with_rewrites::Change::Rewrite { .. } => {
-                            bail!("Rewrite operation encountered during conflict resolution");
-                        }
-                    }
-                    continue;
-                };
-
-                let blob = self
-                    .store
-                    .repo
-                    .find_blob(cm.merged_blob_id)
-                    .with_context(|| {
-                        format!(
-                            "Failed to read merged blob '{}' for conflict",
-                            cm.merged_blob_id
-                        )
-                    })?;
-
-                let tempfile = tempfile::NamedTempFile::new()
-                    .context("Failed to create temporary file for merge conflict")?;
-                tempfile
-                    .as_file()
-                    .write_all(&blob.data)
-                    .context("Failed to write merged content to temporary file for conflict")?;
-                let editor =
-                    std::env::var("EDITOR").context("EDITOR environment variable is not set")?;
-                let status = std::process::Command::new(editor)
-                    .arg(tempfile.path())
-                    .status()
-                    .context("Failed to launch editor for merge conflict resolution")?;
-                if !status.success() {
-                    bail!("Editor exited with non-zero status during merge conflict resolution");
-                }
-
-                let our_location = conflict.ours.location();
-                let their_location = conflict.theirs.location();
-                ensure!(
-                    our_location == their_location,
-                    "Expected conflict locations to match, but got '{}' and '{}'",
-                    our_location.to_str_lossy(),
-                    their_location.to_str_lossy()
-                );
-                let location = our_location;
-
-                merge_outcome.tree.upsert(
-                    Self::diff_location_to_path(location)?.to_str().unwrap(),
-                    gix::objs::tree::EntryKind::Blob,
-                    self.store
-                        .repo
-                        .write_blob(std::fs::read(tempfile.path())?)?,
-                )?;
+                self.resolve_unresolved_conflict(conflict, &mut merge_outcome.tree)?;
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
@@ -426,6 +235,242 @@ impl PorchettaEngine {
         }
 
         debug!("Sync operation completed");
+        Ok(())
+    }
+
+    fn resolve_unresolved_conflict(
+        &self,
+        conflict: &gix::merge::tree::Conflict,
+        merged_tree: &mut gix::object::tree::Editor<'_>,
+    ) -> Result<()> {
+        use inquire::Select;
+
+        let (ours_change, theirs_change) = conflict.changes_in_resolution();
+        let ours_location = ours_change.location();
+        let theirs_location = theirs_change.location();
+
+        let location_description = if ours_location == theirs_location {
+            format!("'{}'", ours_location.to_str_lossy())
+        } else {
+            format!(
+                "ours='{}', theirs='{}'",
+                ours_location.to_str_lossy(),
+                theirs_location.to_str_lossy()
+            )
+        };
+
+        warn!("Encountered unresolved conflict at {location_description}");
+        debug!("Conflict resolution failure: {:?}", conflict.resolution);
+        debug!("Our change: {:?}", ours_change);
+        debug!("Their change: {:?}", theirs_change);
+
+        let has_content_merge = conflict.content_merge().is_some();
+        let mut options = vec![
+            "Keep merge result as-is",
+            "Apply local change (ours)",
+            "Apply remote change (theirs)",
+        ];
+
+        if ours_location != theirs_location {
+            options.push("Apply both changes");
+        }
+
+        if has_content_merge {
+            options.push("Edit merged content");
+        }
+
+        options.push("Abort sync");
+
+        let choice = Select::new("How do you want to resolve this conflict?", options)
+            .prompt()
+            .context("User canceled conflict resolution")?;
+
+        match choice {
+            "Keep merge result as-is" => {}
+            "Apply local change (ours)" => {
+                Self::remove_change_effect_from_tree(merged_tree, theirs_change)?;
+                Self::apply_change_to_tree(merged_tree, ours_change)?;
+            }
+            "Apply remote change (theirs)" => {
+                Self::remove_change_effect_from_tree(merged_tree, ours_change)?;
+                Self::apply_change_to_tree(merged_tree, theirs_change)?;
+            }
+            "Apply both changes" => {
+                Self::apply_change_to_tree(merged_tree, ours_change)?;
+                Self::apply_change_to_tree(merged_tree, theirs_change)?;
+            }
+            "Edit merged content" => {
+                let content_merge = conflict
+                    .content_merge()
+                    .context("Missing merged blob for content-edit resolution")?;
+                let edited_blob_id = self.edit_blob_in_editor(content_merge.merged_blob_id)?;
+
+                Self::remove_change_effect_from_tree(merged_tree, ours_change)?;
+                Self::remove_change_effect_from_tree(merged_tree, theirs_change)?;
+
+                if ours_location == theirs_location {
+                    let kind = Self::entry_kind_for_shared_location(ours_change, theirs_change)?;
+                    merged_tree.upsert(ours_location, kind, edited_blob_id)?;
+                } else {
+                    let placement = Select::new(
+                        "Where should the edited content be written?",
+                        vec![
+                            "Write to local path only",
+                            "Write to remote path only",
+                            "Write to both paths",
+                        ],
+                    )
+                    .prompt()
+                    .context("User canceled edited-content placement")?;
+
+                    match placement {
+                        "Write to local path only" => {
+                            merged_tree.upsert(
+                                ours_location,
+                                ours_change.entry_mode().kind(),
+                                edited_blob_id,
+                            )?;
+                        }
+                        "Write to remote path only" => {
+                            merged_tree.upsert(
+                                theirs_location,
+                                theirs_change.entry_mode().kind(),
+                                edited_blob_id,
+                            )?;
+                        }
+                        "Write to both paths" => {
+                            merged_tree.upsert(
+                                ours_location,
+                                ours_change.entry_mode().kind(),
+                                edited_blob_id,
+                            )?;
+                            merged_tree.upsert(
+                                theirs_location,
+                                theirs_change.entry_mode().kind(),
+                                edited_blob_id,
+                            )?;
+                        }
+                        _ => bail!("Invalid edited-content placement choice"),
+                    }
+                }
+            }
+            "Abort sync" => bail!("Sync aborted by user while resolving conflict"),
+            _ => bail!("Invalid conflict resolution choice"),
+        }
+
+        Ok(())
+    }
+
+    fn entry_kind_for_shared_location(
+        ours_change: &gix::diff::tree_with_rewrites::Change,
+        theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ) -> Result<gix::objs::tree::EntryKind> {
+        use inquire::Select;
+
+        let ours_kind = ours_change.entry_mode().kind();
+        let theirs_kind = theirs_change.entry_mode().kind();
+
+        if ours_kind == theirs_kind {
+            return Ok(ours_kind);
+        }
+
+        let choice = Select::new(
+            "Local and remote entries have different kinds. Which should be used?",
+            vec!["Use local kind (ours)", "Use remote kind (theirs)"],
+        )
+        .prompt()
+        .context("User canceled kind selection for edited content")?;
+
+        match choice {
+            "Use local kind (ours)" => Ok(ours_kind),
+            "Use remote kind (theirs)" => Ok(theirs_kind),
+            _ => bail!("Invalid entry kind choice"),
+        }
+    }
+
+    fn edit_blob_in_editor(&self, blob_oid: ObjectId) -> Result<ObjectId> {
+        use std::io::Write;
+
+        let blob = self
+            .store
+            .repo
+            .find_blob(blob_oid)
+            .with_context(|| format!("Failed to read merged blob '{}' for conflict", blob_oid))?;
+
+        let tempfile = tempfile::NamedTempFile::new()
+            .context("Failed to create temporary file for merge conflict")?;
+        tempfile
+            .as_file()
+            .write_all(&blob.data)
+            .context("Failed to write merged content to temporary file for conflict")?;
+
+        let editor = std::env::var("EDITOR").context("EDITOR environment variable is not set")?;
+        let status = std::process::Command::new(editor)
+            .arg(tempfile.path())
+            .status()
+            .context("Failed to launch editor for merge conflict resolution")?;
+        if !status.success() {
+            bail!("Editor exited with non-zero status during merge conflict resolution");
+        }
+
+        let edited_content = std::fs::read(tempfile.path())
+            .context("Failed to read edited conflict content from temporary file")?;
+        Ok(self.store.repo.write_blob(edited_content)?.into())
+    }
+
+    fn apply_change_to_tree(
+        tree: &mut gix::object::tree::Editor<'_>,
+        change: &gix::diff::tree_with_rewrites::Change,
+    ) -> Result<()> {
+        match change {
+            gix::diff::tree_with_rewrites::Change::Addition {
+                location,
+                entry_mode,
+                id,
+                ..
+            }
+            | gix::diff::tree_with_rewrites::Change::Modification {
+                location,
+                entry_mode,
+                id,
+                ..
+            } => {
+                tree.upsert(location.as_bstr(), entry_mode.kind(), *id)?;
+            }
+            gix::diff::tree_with_rewrites::Change::Deletion { location, .. } => {
+                tree.remove(location.as_bstr())?;
+            }
+            gix::diff::tree_with_rewrites::Change::Rewrite {
+                source_location,
+                location,
+                entry_mode,
+                id,
+                copy,
+                ..
+            } => {
+                if !*copy {
+                    tree.remove(source_location.as_bstr())?;
+                }
+                tree.upsert(location.as_bstr(), entry_mode.kind(), *id)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn remove_change_effect_from_tree(
+        tree: &mut gix::object::tree::Editor<'_>,
+        change: &gix::diff::tree_with_rewrites::Change,
+    ) -> Result<()> {
+        match change {
+            gix::diff::tree_with_rewrites::Change::Addition { location, .. }
+            | gix::diff::tree_with_rewrites::Change::Modification { location, .. }
+            | gix::diff::tree_with_rewrites::Change::Rewrite { location, .. } => {
+                tree.remove(location.as_bstr())?;
+            }
+            gix::diff::tree_with_rewrites::Change::Deletion { .. } => {}
+        }
+
         Ok(())
     }
 
