@@ -57,9 +57,7 @@ fn main() {
                         .arg(temp_file.path())
                         .status()
                         .expect("Failed to launch editor");
-                    if !status.success() {
-                        panic!("Editor exited with non-zero status");
-                    }
+                    assert!(status.success(), "Editor exited with non-zero status");
                     std::fs::read(temp_file.path()).expect("Failed to read edited manifest")
                 })
                 .expect("Failed to edit manifest");
