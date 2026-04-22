@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
@@ -161,7 +161,7 @@ impl PorchettaEngine {
                     continue;
                 }
 
-                self.resolve_unresolved_conflict(conflict, &mut merge_outcome.tree)?;
+                self.resolve_conflict(conflict, &mut merge_outcome.tree)?;
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
@@ -201,26 +201,19 @@ impl PorchettaEngine {
             }
 
             if merged_tree_oid != our_tree_oid {
-                if false {
-                    warn!(
-                        "Skipping apply for topic '{}' due to unresolved merge conflicts",
-                        name
-                    );
-                } else {
-                    let operations = self
-                        .collect_apply_operations(our_tree_oid.into(), merged_tree_oid.into())
-                        .with_context(|| {
-                            format!("Failed to compute apply operations for topic '{}'", name)
-                        })?;
+                let operations = self
+                    .collect_apply_operations(our_tree_oid.into(), merged_tree_oid.into())
+                    .with_context(|| {
+                        format!("Failed to compute apply operations for topic '{}'", name)
+                    })?;
 
-                    self.preflight_apply_operations(&home, &name, &operations)
-                        .with_context(|| {
-                            format!("Pre-flight checks failed for topic '{}'", name)
-                        })?;
+                self.preflight_apply_operations(&home, &name, &operations)
+                    .with_context(|| {
+                        format!("Pre-flight checks failed for topic '{}'", name)
+                    })?;
 
-                    self.apply_operations(&home, &name, operations)
-                        .with_context(|| format!("Failed to apply changes for topic '{}'", name))?;
-                }
+                self.apply_operations(&home, &name, operations)
+                    .with_context(|| format!("Failed to apply changes for topic '{}'", name))?;
             }
 
             self.store.update_topic_hostname_head(
@@ -238,7 +231,57 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    fn resolve_unresolved_conflict(
+    fn resolve_conflict(
+        &self,
+        conflict: &gix::merge::tree::Conflict,
+        merged_tree: &mut gix::object::tree::Editor<'_>,
+    ) -> Result<()> {
+        let (ours_change, theirs_change) = conflict.changes_in_resolution();
+        let location_description = Self::conflict_location_description(ours_change, theirs_change);
+
+        warn!("Encountered unresolved conflict at {location_description}");
+        debug!("Conflict resolution failure: {:?}", conflict.resolution);
+        debug!("Our change: {ours_change:?}");
+        debug!("Their change: {theirs_change:?}");
+
+        if Self::is_blob_level_conflict(conflict, ours_change, theirs_change) {
+            self.resolve_blob_level_conflict(conflict, merged_tree)?;
+        } else {
+            self.resolve_tree_level_conflict(conflict, merged_tree)?;
+        }
+
+        Ok(())
+    }
+
+    fn resolve_blob_level_conflict(
+        &self,
+        conflict: &gix::merge::tree::Conflict,
+        merged_tree: &mut gix::object::tree::Editor<'_>,
+    ) -> Result<()> {
+        let (ours_change, theirs_change) = conflict.changes_in_resolution();
+        ensure!(
+            ours_change.location() == theirs_change.location(),
+            "Blob-level conflict unexpectedly changed location from '{}' to '{}'",
+            ours_change.location().to_str_lossy(),
+            theirs_change.location().to_str_lossy()
+        );
+
+        let content_merge = conflict
+            .content_merge()
+            .context("Expected merged blob for blob-level conflict")?;
+        let edited_blob_id = self.edit_blob_in_editor(content_merge.merged_blob_id)?;
+
+        let entry_kind = if ours_change.entry_mode().kind() == theirs_change.entry_mode().kind() {
+            ours_change.entry_mode().kind()
+        } else {
+            Self::entry_kind_for_shared_location(ours_change, theirs_change)?
+        };
+
+        merged_tree.upsert(ours_change.location(), entry_kind, edited_blob_id)?;
+        Ok(())
+    }
+
+    fn resolve_tree_level_conflict(
         &self,
         conflict: &gix::merge::tree::Conflict,
         merged_tree: &mut gix::object::tree::Editor<'_>,
@@ -246,10 +289,63 @@ impl PorchettaEngine {
         use inquire::Select;
 
         let (ours_change, theirs_change) = conflict.changes_in_resolution();
+        let prompt = Self::tree_conflict_prompt(conflict, ours_change, theirs_change);
+        let choice = Select::new(
+            &prompt,
+            vec!["Keep local (ours)", "Keep remote (theirs)", "Abort sync"],
+        )
+        .prompt()
+        .context("User canceled conflict resolution")?;
+
+        match choice {
+            "Keep local (ours)" => {
+                Self::remove_change_effect_from_tree(merged_tree, theirs_change)?;
+                Self::apply_change_to_tree(merged_tree, ours_change)?;
+            }
+            "Keep remote (theirs)" => {
+                Self::remove_change_effect_from_tree(merged_tree, ours_change)?;
+                Self::apply_change_to_tree(merged_tree, theirs_change)?;
+            }
+            "Abort sync" => bail!("Sync aborted by user while resolving conflict"),
+            _ => bail!("Invalid conflict resolution choice"),
+        }
+
+        Ok(())
+    }
+
+    fn tree_conflict_prompt(
+        conflict: &gix::merge::tree::Conflict,
+        ours_change: &gix::diff::tree_with_rewrites::Change,
+        theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ) -> String {
+        let location_description = Self::conflict_location_description(ours_change, theirs_change);
+        let resolution_description = match &conflict.resolution {
+            Ok(resolution) => format!("Resolution: {resolution:?}"),
+            Err(failure) => format!("Unresolved reason: {failure:?}"),
+        };
+
+        let mut prompt = format!(
+            "Resolve tree conflict at {location_description}\n\n{resolution_description}\n\nOur change: {}\nTheir change: {}",
+            Self::describe_change(ours_change),
+            Self::describe_change(theirs_change),
+        );
+
+        if conflict.content_merge().is_some() {
+            prompt.push_str("\n\nA merged blob exists, but this conflict still needs a structural decision.");
+        }
+
+        prompt.push_str("\n\nChoose which side to keep:");
+        prompt
+    }
+
+    fn conflict_location_description(
+        ours_change: &gix::diff::tree_with_rewrites::Change,
+        theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ) -> String {
         let ours_location = ours_change.location();
         let theirs_location = theirs_change.location();
 
-        let location_description = if ours_location == theirs_location {
+        if ours_location == theirs_location {
             format!("'{}'", ours_location.to_str_lossy())
         } else {
             format!(
@@ -257,108 +353,60 @@ impl PorchettaEngine {
                 ours_location.to_str_lossy(),
                 theirs_location.to_str_lossy()
             )
-        };
-
-        warn!("Encountered unresolved conflict at {location_description}");
-        debug!("Conflict resolution failure: {:?}", conflict.resolution);
-        debug!("Our change: {:?}", ours_change);
-        debug!("Their change: {:?}", theirs_change);
-
-        let has_content_merge = conflict.content_merge().is_some();
-        let mut options = vec![
-            "Keep merge result as-is",
-            "Apply local change (ours)",
-            "Apply remote change (theirs)",
-        ];
-
-        if ours_location != theirs_location {
-            options.push("Apply both changes");
         }
+    }
 
-        if has_content_merge {
-            options.push("Edit merged content");
+    fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
+        match change {
+            gix::diff::tree_with_rewrites::Change::Addition { location, entry_mode, .. } => {
+                format!("add {:?} at '{}'", entry_mode.kind(), location.to_str_lossy())
+            }
+            gix::diff::tree_with_rewrites::Change::Deletion { location, entry_mode, .. } => {
+                format!("delete {:?} at '{}'", entry_mode.kind(), location.to_str_lossy())
+            }
+            gix::diff::tree_with_rewrites::Change::Modification {
+                location,
+                previous_entry_mode,
+                entry_mode,
+                ..
+            } => {
+                format!(
+                    "modify '{}' ({:?} -> {:?})",
+                    location.to_str_lossy(),
+                    previous_entry_mode.kind(),
+                    entry_mode.kind()
+                )
+            }
+            gix::diff::tree_with_rewrites::Change::Rewrite {
+                source_location,
+                location,
+                source_entry_mode,
+                entry_mode,
+                copy,
+                ..
+            } => {
+                let action = if *copy { "copy" } else { "rename" };
+                format!(
+                    "{action} {:?} '{}' -> '{}' ({:?} -> {:?})",
+                    source_entry_mode.kind(),
+                    source_location.to_str_lossy(),
+                    location.to_str_lossy(),
+                    source_entry_mode.kind(),
+                    entry_mode.kind()
+                )
+            }
         }
+    }
 
-        options.push("Abort sync");
-
-        let choice = Select::new("How do you want to resolve this conflict?", options)
-            .prompt()
-            .context("User canceled conflict resolution")?;
-
-        match choice {
-            "Keep merge result as-is" => {}
-            "Apply local change (ours)" => {
-                Self::remove_change_effect_from_tree(merged_tree, theirs_change)?;
-                Self::apply_change_to_tree(merged_tree, ours_change)?;
-            }
-            "Apply remote change (theirs)" => {
-                Self::remove_change_effect_from_tree(merged_tree, ours_change)?;
-                Self::apply_change_to_tree(merged_tree, theirs_change)?;
-            }
-            "Apply both changes" => {
-                Self::apply_change_to_tree(merged_tree, ours_change)?;
-                Self::apply_change_to_tree(merged_tree, theirs_change)?;
-            }
-            "Edit merged content" => {
-                let content_merge = conflict
-                    .content_merge()
-                    .context("Missing merged blob for content-edit resolution")?;
-                let edited_blob_id = self.edit_blob_in_editor(content_merge.merged_blob_id)?;
-
-                Self::remove_change_effect_from_tree(merged_tree, ours_change)?;
-                Self::remove_change_effect_from_tree(merged_tree, theirs_change)?;
-
-                if ours_location == theirs_location {
-                    let kind = Self::entry_kind_for_shared_location(ours_change, theirs_change)?;
-                    merged_tree.upsert(ours_location, kind, edited_blob_id)?;
-                } else {
-                    let placement = Select::new(
-                        "Where should the edited content be written?",
-                        vec![
-                            "Write to local path only",
-                            "Write to remote path only",
-                            "Write to both paths",
-                        ],
-                    )
-                    .prompt()
-                    .context("User canceled edited-content placement")?;
-
-                    match placement {
-                        "Write to local path only" => {
-                            merged_tree.upsert(
-                                ours_location,
-                                ours_change.entry_mode().kind(),
-                                edited_blob_id,
-                            )?;
-                        }
-                        "Write to remote path only" => {
-                            merged_tree.upsert(
-                                theirs_location,
-                                theirs_change.entry_mode().kind(),
-                                edited_blob_id,
-                            )?;
-                        }
-                        "Write to both paths" => {
-                            merged_tree.upsert(
-                                ours_location,
-                                ours_change.entry_mode().kind(),
-                                edited_blob_id,
-                            )?;
-                            merged_tree.upsert(
-                                theirs_location,
-                                theirs_change.entry_mode().kind(),
-                                edited_blob_id,
-                            )?;
-                        }
-                        _ => bail!("Invalid edited-content placement choice"),
-                    }
-                }
-            }
-            "Abort sync" => bail!("Sync aborted by user while resolving conflict"),
-            _ => bail!("Invalid conflict resolution choice"),
-        }
-
-        Ok(())
+    fn is_blob_level_conflict(
+        conflict: &gix::merge::tree::Conflict,
+        ours_change: &gix::diff::tree_with_rewrites::Change,
+        theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ) -> bool {
+        conflict.content_merge().is_some()
+            && ours_change.location() == theirs_change.location()
+            && ours_change.entry_mode().is_blob_or_symlink()
+            && theirs_change.entry_mode().is_blob_or_symlink()
     }
 
     fn entry_kind_for_shared_location(
