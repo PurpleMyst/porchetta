@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
@@ -10,6 +10,62 @@ use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
 use crate::store::PorchettaStore;
+
+/*
+for conflict in &outcome.conflicts {
+           if conflict.resolution.is_ok() {
+               continue; // Already resolved
+           }
+
+           let (ours_change, their_change) = conflict.changes_in_resolution();
+           let path = ours_change.location();
+           let entries = conflict.entries(); // [base, ours, theirs]
+
+           // Read blob contents
+           let base_content = entries[0].as_ref()
+               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
+               .transpose()?.unwrap_or_default();
+
+           let ours_content = entries[1].as_ref()
+               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
+               .transpose()?.unwrap_or_default();
+
+           let theirs_content = entries[2].as_ref()
+               .map(|e| repo.find_blob(e.id, &mut vec![]).map(|b| b.data.to_vec()))
+               .transpose()?.unwrap_or_default();
+
+           // Generate conflict markers
+           let mut output = vec![];
+           let resolution = builtin_driver::text(
+               &mut output,
+               &mut Default::default(),
+               Labels {
+                   ancestor: Some("base".into()),
+                   current: Some("HEAD".into()),
+                   other: Some("feature".into()),
+               },
+               &ours_content,
+               &base_content,
+               &theirs_content,
+               builtin_driver::text::Options {
+                   diff_algorithm: imara_diff::Algorithm::Myers,
+                   conflict: builtin_driver::text::Conflict::Keep {
+                       style: ConflictStyle::Merge,
+                       marker_size: 7.try_into().unwrap(),
+                   },
+               },
+           );
+
+           // Write to worktree
+           let file_path = workdir.join(path.as_ref());
+           if let Some(parent) = file_path.parent() {
+               std::fs::create_dir_all(parent)?;
+           }
+           std::fs::write(&file_path, &output)?;
+
+           println!("Wrote conflict markers to: {}", path);
+       }
+ */
 
 enum ApplyOperation {
     Upsert {
@@ -197,13 +253,61 @@ impl PorchettaEngine {
                 self.store.repo.tree_merge_options()?,
             )?;
 
-            let has_unresolved_conflicts =
-                merge_outcome.has_unresolved_conflicts(Default::default());
-            if has_unresolved_conflicts {
-                warn!(
-                    "Merge conflicts detected for topic '{}' - resolution not yet implemented",
-                    name
+            for conflict in &merge_outcome.conflicts {
+                use std::io::Write;
+
+                if !conflict.is_unresolved(Default::default()) {
+                    continue;
+                }
+
+                let Some(cm) = conflict.content_merge() else {
+                    bail!("Expected content merge for conflict {conflict:?}, but got none");
+                };
+
+                let blob = self
+                    .store
+                    .repo
+                    .find_blob(cm.merged_blob_id)
+                    .with_context(|| {
+                        format!(
+                            "Failed to read merged blob '{}' for conflict",
+                            cm.merged_blob_id
+                        )
+                    })?;
+
+                let tempfile = tempfile::NamedTempFile::new()
+                    .context("Failed to create temporary file for merge conflict")?;
+                tempfile
+                    .as_file()
+                    .write_all(&blob.data)
+                    .context("Failed to write merged content to temporary file for conflict")?;
+                let editor =
+                    std::env::var("EDITOR").context("EDITOR environment variable is not set")?;
+                let status = std::process::Command::new(editor)
+                    .arg(tempfile.path())
+                    .status()
+                    .context("Failed to launch editor for merge conflict resolution")?;
+                if !status.success() {
+                    bail!("Editor exited with non-zero status during merge conflict resolution");
+                }
+
+                let our_location = conflict.ours.location();
+                let their_location = conflict.theirs.location();
+                ensure!(
+                    our_location == their_location,
+                    "Expected conflict locations to match, but got '{}' and '{}'",
+                    our_location.to_str_lossy(),
+                    their_location.to_str_lossy()
                 );
+                let location = our_location;
+
+                merge_outcome.tree.upsert(
+                    Self::diff_location_to_path(location)?.to_str().unwrap(),
+                    gix::objs::tree::EntryKind::Blob,
+                    self.store
+                        .repo
+                        .write_blob(std::fs::read(tempfile.path())?)?,
+                )?;
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
@@ -243,7 +347,7 @@ impl PorchettaEngine {
             }
 
             if merged_tree_oid != our_tree_oid {
-                if has_unresolved_conflicts {
+                if false {
                     warn!(
                         "Skipping apply for topic '{}' due to unresolved merge conflicts",
                         name
