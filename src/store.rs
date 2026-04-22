@@ -1,4 +1,4 @@
-use std::env::home_dir;
+use dirs::home_dir;
 
 use anyhow::{Context, Result};
 use log::{debug, info, trace};

@@ -1,14 +1,23 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use log::info;
 
 use porchetta::engine::PorchettaEngine;
 use porchetta::store::PorchettaStore;
+use porchetta::ui;
 
 #[derive(Parser)]
 #[command(name = "porchetta")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+
+    /// Increase output verbosity
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
+    /// Decrease output verbosity
+    #[arg(short, long, global = true)]
+    quiet: bool,
 }
 
 #[derive(Subcommand, Clone)]
@@ -19,55 +28,79 @@ enum Command {
     Sync,
 }
 
-fn main() {
-    simple_logger::SimpleLogger::new()
-        .with_local_timestamps()
-        .with_level(log::LevelFilter::Debug)
-        .init()
-        .expect("Failed to initialize logger");
+fn init_logging(quiet: bool, verbose: bool) -> Result<()> {
+    let log_dir = dirs::data_local_dir()
+        .context("Could not determine local data directory")?
+        .join("porchetta")
+        .join("logs");
 
+    let spec = match (quiet, verbose) {
+        (true, _) => "warn",
+        (_, true) => "debug",
+        _ => "info",
+    };
+
+    flexi_logger::Logger::try_with_str(spec)?
+        .log_to_file(flexi_logger::FileSpec::default().directory(log_dir))
+        .duplicate_to_stderr(flexi_logger::Duplicate::Warn)
+        .append()
+        .start()
+        .context("Failed to initialize logger")?;
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    init_logging(cli.quiet, cli.verbose)?;
 
     match cli.command {
         Command::Init => {
-            PorchettaStore::init().expect("Failed to initialize store");
-            info!("Initialized Porchetta store");
+            PorchettaStore::init().context("Failed to initialize store")?;
+            ui::success("Initialized Porchetta store");
         }
         Command::Show => {
-            let store = PorchettaStore::load().expect("Failed to load store");
-            let manifest = store.read_manifest().expect("Failed to load manifest");
-            println!("{}", String::from_utf8_lossy(&manifest));
+            let store = PorchettaStore::load().context("Failed to load store")?;
+            let manifest = store.read_manifest().context("Failed to load manifest")?;
+            ui::header("Manifest");
+            ui::manifest_block(&String::from_utf8_lossy(&manifest));
         }
         Command::Edit => {
-            let store = PorchettaStore::load().expect("Failed to load store");
+            let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
 
-            let editor = std::env::var("EDITOR").expect("EDITOR environment variable not set");
+            let editor =
+                std::env::var("EDITOR").context("EDITOR environment variable not set")?;
 
             engine
-                .edit_manifest(|content| {
+                .edit_manifest(|content| -> Result<Vec<u8>> {
                     let mut temp_file = tempfile::Builder::new()
                         .prefix("porchetta_manifest")
                         .suffix(".lua")
                         .tempfile()
-                        .expect("Failed to create temp file");
+                        .context("Failed to create temp file")?;
                     std::io::Write::write_all(&mut temp_file, content)
-                        .expect("Failed to write manifest to temp file");
+                        .context("Failed to write manifest to temp file")?;
                     let status = std::process::Command::new(&editor)
                         .arg(temp_file.path())
                         .status()
-                        .expect("Failed to launch editor");
-                    assert!(status.success(), "Editor exited with non-zero status");
-                    std::fs::read(temp_file.path()).expect("Failed to read edited manifest")
+                        .context("Failed to launch editor")?;
+                    if !status.success() {
+                        anyhow::bail!("Editor exited with non-zero status");
+                    }
+                    std::fs::read(temp_file.path()).context("Failed to read edited manifest")
                 })
-                .expect("Failed to edit manifest");
-            info!("Edited manifest");
+                .context("Failed to edit manifest")?;
+            ui::success("Manifest updated");
         }
         Command::Sync => {
-            let store = PorchettaStore::load().expect("Failed to load store");
+            let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
-            engine.sync().expect("Failed to sync");
-            info!("Synced topics");
+            engine.sync().context("Failed to sync")?;
+            ui::success("All topics synchronized");
         }
     }
+
+    Ok(())
 }

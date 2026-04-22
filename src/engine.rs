@@ -36,10 +36,10 @@ impl PorchettaEngine {
     /// # Errors
     ///
     /// Returns an error if reading or writing the manifest fails.
-    pub fn edit_manifest(&mut self, editor: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<()> {
+    pub fn edit_manifest(&mut self, editor: impl FnOnce(&[u8]) -> Result<Vec<u8>>) -> Result<()> {
         debug!("Starting manifest edit");
         let manifest_content = self.store.read_manifest()?;
-        let new_manifest_content = editor(&manifest_content);
+        let new_manifest_content = editor(&manifest_content)?;
         self.store.write_manifest(&new_manifest_content)?;
         debug!("Manifest edit completed");
         Ok(())
