@@ -8,7 +8,7 @@ use porchetta::store::PorchettaStore;
 use porchetta::ui;
 
 #[derive(Parser)]
-#[command(name = "porchetta")]
+#[command(name = "porchetta", about = "Dotfile manager with topics and conflict resolution")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -24,18 +24,24 @@ struct Cli {
 
 #[derive(Subcommand, Clone)]
 enum Command {
+    /// Initialize a new Porchetta store
     Init,
+    /// Open the manifest in your default editor
     Edit,
+    /// Display the current manifest
     Show,
+    /// Apply the manifest to the local machine
     Sync {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
     },
+    /// Clone a Porchetta store from a remote URL
     Clone {
         /// URL of the remote Porchetta store
         url: String,
     },
+    /// Migrate configuration from another dotfile manager
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
@@ -44,6 +50,7 @@ enum Command {
 
 #[derive(Subcommand, Clone)]
 enum MigrateCommand {
+    /// Import topics and paths from a chezmoi source directory
     Chezmoi {
         /// Path to chezmoi source directory (default: ~/.local/share/chezmoi)
         #[arg(long, value_name = "DIR")]
