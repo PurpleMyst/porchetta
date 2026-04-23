@@ -27,7 +27,11 @@ enum Command {
     Init,
     Edit,
     Show,
-    Sync,
+    Sync {
+        /// Preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+    },
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
@@ -124,12 +128,20 @@ fn main() -> Result<()> {
                 .context("Failed to edit manifest")?;
             ui::success("Manifest updated");
         }
-        Command::Sync => {
+        Command::Sync { dry_run } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
-            ui::header("Syncing topics");
-            engine.sync(cli.verbose).context("Failed to sync")?;
-            ui::success("All topics synchronized");
+            if dry_run {
+                ui::header("Syncing topics (dry run)");
+            } else {
+                ui::header("Syncing topics");
+            }
+            engine.sync(cli.verbose, dry_run).context("Failed to sync")?;
+            if dry_run {
+                ui::success("Dry run complete");
+            } else {
+                ui::success("All topics synchronized");
+            }
         }
         Command::Migrate {
             command: MigrateCommand::Chezmoi { source_dir, yes },

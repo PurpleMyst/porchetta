@@ -35,11 +35,20 @@ fn from_tree_path(path: &str) -> Utf8PathBuf {
 
 pub struct PorchettaEngine {
     store: PorchettaStore,
+    home: Option<Utf8PathBuf>,
 }
 
 impl PorchettaEngine {
     pub fn new(store: PorchettaStore) -> Self {
-        Self { store }
+        Self { store, home: None }
+    }
+
+    /// Creates an engine bound to a specific home directory (useful for tests).
+    pub fn with_home(store: PorchettaStore, home: Utf8PathBuf) -> Self {
+        Self {
+            store,
+            home: Some(home),
+        }
     }
 
     /// Edits the manifest using the provided editor function.
@@ -64,11 +73,15 @@ impl PorchettaEngine {
     /// cannot be loaded, if hostname cannot be obtained, or if any file system operation,
     /// git operation, or conflict resolution fails.
     #[allow(clippy::too_many_lines)]
-    pub fn sync(&mut self, verbose: bool) -> Result<()> {
+    pub fn sync(&mut self, verbose: bool, dry_run: bool) -> Result<()> {
         debug!("Starting sync operation");
-        let home = Utf8PathBuf::try_from(
-            dirs::home_dir().context("Could not determine home directory")?
-        ).map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+        let home = match &self.home {
+            Some(h) => h.clone(),
+            None => Utf8PathBuf::try_from(
+                dirs::home_dir().context("Could not determine home directory")?
+            )
+            .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?,
+        };
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
@@ -195,12 +208,31 @@ impl PorchettaEngine {
                 self.store.repo.tree_merge_options()?,
             )?;
 
-            for conflict in &merge_outcome.conflicts {
-                if !conflict.is_unresolved(TreatAsUnresolved::default()) {
-                    continue;
-                }
+            let has_unresolved = merge_outcome.conflicts.iter().any(|c| {
+                c.is_unresolved(TreatAsUnresolved::default())
+            });
 
-                self.resolve_conflict(conflict, &mut merge_outcome.tree)?;
+            if dry_run && has_unresolved {
+                ui::bullet(&format!("{name} — would require conflict resolution"));
+                for conflict in &merge_outcome.conflicts {
+                    if !conflict.is_unresolved(TreatAsUnresolved::default()) {
+                        continue;
+                    }
+                    let (ours_change, theirs_change) = conflict.changes_in_resolution();
+                    let location_description =
+                        Self::conflict_location_description(ours_change, theirs_change);
+                    ui::info(&format!("  unresolved conflict at {location_description}"));
+                }
+                continue;
+            }
+
+            if !dry_run {
+                for conflict in &merge_outcome.conflicts {
+                    if !conflict.is_unresolved(TreatAsUnresolved::default()) {
+                        continue;
+                    }
+                    self.resolve_conflict(conflict, &mut merge_outcome.tree)?;
+                }
             }
 
             let merged_tree_oid = merge_outcome.tree.write()?;
@@ -210,36 +242,40 @@ impl PorchettaEngine {
             let pulled = merged_tree_oid != our_tree_oid;
 
             if pushed {
-                let signature = gix::actor::Signature {
-                    name: "Porchetta".into(),
-                    email: "".into(),
-                    time: gix::date::Time::now_utc(),
-                };
-                let mut commit = gix::objs::Commit {
-                    tree: merged_tree_oid.into(),
-                    parents: self
-                        .store
-                        .get_topic_head(&name)?
-                        .into_iter()
-                        .chain(
-                            self.store
-                                .get_topic_hostname_head(&name, &hostname)?
-                                .into_iter(),
-                        )
-                        .collect(),
-                    message: format!("Sync topic '{name}'").into(),
-                    author: signature.clone(),
-                    committer: signature,
-                    encoding: None,
-                    extra_headers: vec![],
-                };
-                commit.parents.dedup();
-                let commit_oid = self.store.repo.write_object(commit)?.into();
-                if verbose {
-                    ui::bullet(&format!("pushed to repo ({commit_oid})"));
+                if dry_run {
+                    ui::bullet(&format!("would push topic '{name}' to repo"));
+                } else {
+                    let signature = gix::actor::Signature {
+                        name: "Porchetta".into(),
+                        email: "".into(),
+                        time: gix::date::Time::now_utc(),
+                    };
+                    let mut commit = gix::objs::Commit {
+                        tree: merged_tree_oid.into(),
+                        parents: self
+                            .store
+                            .get_topic_head(&name)?
+                            .into_iter()
+                            .chain(
+                                self.store
+                                    .get_topic_hostname_head(&name, &hostname)?
+                                    .into_iter(),
+                            )
+                            .collect(),
+                        message: format!("Sync topic '{name}'").into(),
+                        author: signature.clone(),
+                        committer: signature,
+                        encoding: None,
+                        extra_headers: vec![],
+                    };
+                    commit.parents.dedup();
+                    let commit_oid = self.store.repo.write_object(commit)?.into();
+                    if verbose {
+                        ui::bullet(&format!("pushed to repo ({commit_oid})"));
+                    }
+                    debug!("Created commit: {commit_oid}");
+                    self.store.update_topic_head(&name, commit_oid)?;
                 }
-                debug!("Created commit: {commit_oid}");
-                self.store.update_topic_head(&name, commit_oid)?;
             } else {
                 debug!("Topic '{name}' has no changes from repo");
             }
@@ -250,20 +286,51 @@ impl PorchettaEngine {
                     .with_context(|| {
                         format!("Failed to compute apply operations for topic '{name}'")
                     })?;
-                if verbose {
-                    ui::bullet(&format!("applied {} change(s) to system", operations.len()));
+
+                if dry_run {
+                    ui::bullet(&format!(
+                        "would apply {} change(s) to system",
+                        operations.len()
+                    ));
+                    for op in &operations {
+                        match op {
+                            ApplyOperation::Upsert { relative_path, .. } => {
+                                ui::info(&format!("  would upsert {relative_path}"));
+                            }
+                            ApplyOperation::Delete { relative_path } => {
+                                ui::info(&format!("  would delete {relative_path}"));
+                            }
+                        }
+                    }
+                } else {
+                    if verbose {
+                        ui::bullet(&format!(
+                            "applied {} change(s) to system",
+                            operations.len()
+                        ));
+                    }
+
+                    Self::preflight_apply_operations(&topic_base, &name, &operations)
+                        .with_context(|| {
+                            format!("Pre-flight checks failed for topic '{name}'")
+                        })?;
+
+                    self.apply_operations(&topic_base, &name, operations)
+                        .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
                 }
-
-                Self::preflight_apply_operations(&topic_base, &name, &operations)
-                    .with_context(|| {
-                        format!("Pre-flight checks failed for topic '{name}'")
-                    })?;
-
-                self.apply_operations(&topic_base, &name, operations)
-                    .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
             }
 
-            let status = if pushed && pulled {
+            let status = if dry_run {
+                if pushed && pulled {
+                    "would sync"
+                } else if pushed {
+                    "would push"
+                } else if pulled {
+                    "would apply"
+                } else {
+                    "unchanged"
+                }
+            } else if pushed && pulled {
                 "synced"
             } else if pushed {
                 "pushed"
@@ -274,13 +341,15 @@ impl PorchettaEngine {
             };
             ui::bullet(&format!("{name} — {status}"));
 
-            self.store.update_topic_hostname_head(
-                &name,
-                &hostname,
-                self.store
-                    .get_topic_head(&name)?
-                    .context("Missing topic head for existing topic")?,
-            )?;
+            if !dry_run {
+                self.store.update_topic_hostname_head(
+                    &name,
+                    &hostname,
+                    self.store
+                        .get_topic_head(&name)?
+                        .context("Missing topic head for existing topic")?,
+                )?;
+            }
 
             info!("Synchronized topic '{name}'");
         }
