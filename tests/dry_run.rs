@@ -60,7 +60,7 @@ fn test_sync_dry_run_does_not_create_commits() {
         .repo
         .write_object(gix::objs::Commit {
             tree: new_tree_id.into(),
-            parents: [head.into()].into(),
+            parents: [head].into(),
             message: "Modified".into(),
             author: signature.clone(),
             committer: signature,
