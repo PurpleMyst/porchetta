@@ -250,4 +250,151 @@ impl PorchettaStore {
         );
         self.update_branch_head(&branch_name, new_head)
     }
+
+    /// Gets the head commit for the manifest branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest reference cannot be read.
+    pub fn get_manifest_head(&self) -> Result<Option<gix::ObjectId>> {
+        self.get_branch_head("manifest")
+    }
+
+    /// Updates the head commit for the manifest branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest reference cannot be updated.
+    pub fn update_manifest_head(&self, new_head: gix::ObjectId) -> Result<()> {
+        self.update_branch_head("manifest", new_head)
+    }
+
+    /// Returns whether the store has a remote named `origin`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `git` binary cannot be executed.
+    pub fn has_origin(&self) -> Result<bool> {
+        let output = std::process::Command::new("git")
+            .current_dir(self.repo.path())
+            .args(["config", "--get", "remote.origin.url"])
+            .output()
+            .context("Failed to run git config")?;
+        Ok(output.status.success())
+    }
+
+    /// Runs `git fetch origin` in the store repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `git` binary is missing or the fetch fails.
+    pub fn git_fetch(&self) -> Result<()> {
+        let status = std::process::Command::new("git")
+            .current_dir(self.repo.path())
+            .args([
+                "fetch",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ])
+            .status()
+            .context("Failed to run git fetch")?;
+        if !status.success() {
+            bail!("git fetch failed");
+        }
+        Ok(())
+    }
+
+    /// Runs `git merge-base --is-ancestor` to test ancestry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `git` binary is missing or the command fails unexpectedly.
+    pub fn git_ancestor_check(
+        &self,
+        ancestor: gix::ObjectId,
+        descendant: gix::ObjectId,
+    ) -> Result<bool> {
+        let status = std::process::Command::new("git")
+            .current_dir(self.repo.path())
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                &ancestor.to_string(),
+                &descendant.to_string(),
+            ])
+            .status()
+            .context("Failed to run git merge-base")?;
+        if status.success() {
+            Ok(true)
+        } else if status.code() == Some(1) {
+            Ok(false)
+        } else {
+            bail!("git merge-base failed with unexpected exit code");
+        }
+    }
+
+    /// Pushes the given refs to `origin`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `git` binary is missing or the push fails.
+    pub fn git_push(&self, refs: &[String]) -> Result<()> {
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let status = std::process::Command::new("git")
+            .current_dir(self.repo.path())
+            .arg("push")
+            .arg("origin")
+            .args(refs)
+            .status()
+            .context("Failed to run git push")?;
+        if !status.success() {
+            bail!("git push failed");
+        }
+        Ok(())
+    }
+
+    /// Gets the head commit for a topic on a remote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote tracking branch cannot be read.
+    pub fn get_remote_topic_head(
+        &self,
+        remote: &str,
+        topic: &str,
+    ) -> Result<Option<gix::ObjectId>> {
+        let branch_name = format!("{remote}/topic/{topic}");
+        self.get_remote_branch_head(&branch_name)
+    }
+
+    /// Gets the head commit for the manifest on a remote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote tracking branch cannot be read.
+    pub fn get_remote_manifest_head(&self, remote: &str) -> Result<Option<gix::ObjectId>> {
+        let branch_name = format!("{remote}/manifest");
+        self.get_remote_branch_head(&branch_name)
+    }
+
+    fn get_remote_branch_head(&self, branch: &str) -> Result<Option<gix::ObjectId>> {
+        let reference_name = format!("refs/remotes/{branch}");
+        trace!("Looking up remote branch head for '{reference_name}'");
+        match self.repo.find_reference(&reference_name) {
+            Ok(reference) => Ok(Some(
+                reference
+                    .target()
+                    .try_id()
+                    .context("Reference does not point to an object id")?
+                    .to_owned(),
+            )),
+            Err(gix::reference::find::existing::Error::NotFound { .. }) => {
+                debug!("Remote branch '{reference_name}' not found");
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
 }

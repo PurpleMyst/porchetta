@@ -35,6 +35,9 @@ enum Command {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
+        /// Do not fetch or push from the remote
+        #[arg(long)]
+        offline: bool,
     },
     /// Clone a Porchetta store from a remote URL
     Clone {
@@ -139,7 +142,7 @@ fn main() -> Result<()> {
                 .context("Failed to edit manifest")?;
             ui::success("Manifest updated");
         }
-        Command::Sync { dry_run } => {
+        Command::Sync { dry_run, offline } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
             if dry_run {
@@ -147,7 +150,7 @@ fn main() -> Result<()> {
             } else {
                 ui::header("Syncing topics");
             }
-            engine.sync(cli.verbose, dry_run).context("Failed to sync")?;
+            engine.sync(cli.verbose, dry_run, offline).context("Failed to sync")?;
             if dry_run {
                 ui::success("Dry run complete");
             } else {
