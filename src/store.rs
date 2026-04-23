@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use dirs::home_dir;
 
 use anyhow::{Context, Result};
@@ -17,7 +18,7 @@ impl PorchettaStore {
     /// Returns an error if the store path cannot be determined or if any git operation fails.
     pub fn init() -> Result<Self> {
         let repo = gix::init_bare(Self::store_path()?)?;
-        info!("Initialized Porchetta store at {}", Self::store_path()?.display());
+        info!("Initialized Porchetta store at {}", Self::store_path()?);
         let manifest_content = b"return { topics = {} }\n";
         let this = Self { repo };
         this.write_manifest(manifest_content)?;
@@ -31,7 +32,7 @@ impl PorchettaStore {
     /// Returns an error if the store path cannot be determined or if the store cannot be opened.
     pub fn load() -> Result<Self> {
         let repo = gix::open(Self::store_path()?)?;
-        info!("Loaded Porchetta store from {}", Self::store_path()?.display());
+        info!("Loaded Porchetta store from {}", Self::store_path()?);
         Ok(Self { repo })
     }
 
@@ -40,10 +41,11 @@ impl PorchettaStore {
     /// # Errors
     ///
     /// Returns an error if the home directory cannot be determined.
-    pub fn store_path() -> Result<std::path::PathBuf> {
+    pub fn store_path() -> Result<Utf8PathBuf> {
         let home = home_dir().context("Could not determine home directory")?;
-        let path = home.join(".porchetta");
-        trace!("Store path resolved to {}", path.display());
+        let path = Utf8PathBuf::try_from(home.join(".porchetta"))
+            .map_err(|e| anyhow::anyhow!("store path is not valid UTF-8: {e}"))?;
+        trace!("Store path resolved to {path}");
         Ok(path)
     }
 

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use camino::{Utf8Path, Utf8PathBuf};
 use log::{debug, info, trace, warn};
 
 use crate::manifest::Manifest;
@@ -281,7 +281,7 @@ fn is_special_chezmoi_dir(name: &str) -> bool {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct TargetEntry {
-    target_rel_path: PathBuf,
+    target_rel_path: Utf8PathBuf,
     kind: FileKind,
     template: bool,
     encrypted: bool,
@@ -290,17 +290,14 @@ struct TargetEntry {
 // ─── Target path remapping ─────────────────────────────────────────────────
 
 /// Remaps Windows `AppData/Local` and `AppData/Roaming` prefixes to `.config`.
-fn remap_target_path(path: &Path) -> PathBuf {
-    let components: Vec<&str> = path
-        .components()
-        .map(|c| c.as_os_str().to_str().unwrap_or(""))
-        .collect();
+fn remap_target_path(path: &Utf8Path) -> Utf8PathBuf {
+    let components: Vec<&str> = path.components().map(|c| c.as_str()).collect();
     if components.len() >= 2
         && components[0] == "AppData"
         && (components[1] == "Local" || components[1] == "Roaming")
     {
-        let rest: PathBuf = components.iter().skip(2).collect();
-        return PathBuf::from(".config").join(rest);
+        let rest: Utf8PathBuf = components.iter().skip(2).collect();
+        return Utf8PathBuf::from(".config").join(rest);
     }
     path.to_path_buf()
 }
@@ -308,20 +305,21 @@ fn remap_target_path(path: &Path) -> PathBuf {
 // ─── Walker ──────────────────────────────────────────────────────────────────
 
 fn walk_source_dir(
-    source_root: &Path,
-    rel_dir: &Path,
-    target_prefix: &Path,
+    source_root: &Utf8Path,
+    rel_dir: &Utf8Path,
+    target_prefix: &Utf8Path,
     entries: &mut Vec<TargetEntry>,
     warnings: &mut Warnings,
 ) -> Result<()> {
     let abs_dir = source_root.join(rel_dir);
     let dir_reader = std::fs::read_dir(&abs_dir)
-        .with_context(|| format!("failed to read dir {}", abs_dir.display()))?;
+        .with_context(|| format!("failed to read dir {abs_dir}"))?;
 
     for entry in dir_reader {
         let entry = entry?;
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
+        let name = entry.file_name().into_string().map_err(|_| {
+            anyhow::anyhow!("non-UTF-8 file name in {abs_dir}")
+        })?;
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() && name == ".git" {
@@ -364,7 +362,7 @@ fn walk_source_dir(
             }
 
             let new_target = target_prefix.join(&dir_attr.target_name);
-            let new_rel = rel_dir.join(name.as_ref());
+            let new_rel = rel_dir.join(name.as_str());
             walk_source_dir(source_root, &new_rel, &new_target, entries, warnings)?;
         } else if file_type.is_file() || file_type.is_symlink() {
             let file_attr = match parse_file_name(&name) {
@@ -477,15 +475,15 @@ impl Warnings {
 /// subdirectory). Processes bottom-up so a parent's decision can reuse its
 /// children's decisions.
 fn compute_manifest_paths(
-    managed_files: &HashSet<PathBuf>,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
+    managed_files: &HashSet<Utf8PathBuf>,
+    home: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>> {
     // Collect all directories that appear as ancestors of managed files.
-    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut dirs: Vec<Utf8PathBuf> = Vec::new();
     for file in managed_files {
         let mut parent = file.parent();
         while let Some(p) = parent {
-            if p.as_os_str().is_empty() {
+            if p.as_str().is_empty() {
                 break;
             }
             dirs.push(p.to_path_buf());
@@ -498,7 +496,7 @@ fn compute_manifest_paths(
     // Deepest first so children are resolved before their parents.
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
 
-    let mut collapsed: HashSet<PathBuf> = HashSet::new();
+    let mut collapsed: HashSet<Utf8PathBuf> = HashSet::new();
 
     for dir in &dirs {
         let abs_dir = home.join(dir);
@@ -507,11 +505,13 @@ fn compute_manifest_paths(
             let mut ok = true;
             let mut count = 0;
             for entry in std::fs::read_dir(&abs_dir)
-                .with_context(|| format!("failed to read dir {}", abs_dir.display()))?
+                .with_context(|| format!("failed to read dir {abs_dir}"))?
             {
                 let entry = entry?;
                 count += 1;
-                let entry_name = entry.file_name();
+                let entry_name = entry.file_name().into_string().map_err(|_| {
+                    anyhow::anyhow!("non-UTF-8 file name in {abs_dir}")
+                })?;
                 let entry_rel = dir.join(&entry_name);
 
                 let is_managed = if entry.file_type()?.is_dir() {
@@ -537,7 +537,7 @@ fn compute_manifest_paths(
     }
 
     // Keep only maximal collapsed dirs (not children of other collapsed dirs).
-    let mut maximal: Vec<PathBuf> = Vec::new();
+    let mut maximal: Vec<Utf8PathBuf> = Vec::new();
     for dir in &collapsed {
         let is_child = collapsed
             .iter()
@@ -549,7 +549,7 @@ fn compute_manifest_paths(
 
     // Final manifest paths: maximal collapsed dirs plus individual files
     // that are not already covered by a collapsed ancestor.
-    let mut paths: Vec<PathBuf> = maximal.clone();
+    let mut paths: Vec<Utf8PathBuf> = maximal.clone();
     for file in managed_files {
         let inside_collapsed = maximal.iter().any(|m| file.starts_with(m));
         if !inside_collapsed {
@@ -561,10 +561,10 @@ fn compute_manifest_paths(
     Ok(paths)
 }
 
-fn topic_name_for_path(path: &Path) -> String {
+fn topic_name_for_path(path: &Utf8Path) -> String {
     let components: Vec<String> = path
         .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .map(|c| c.as_str().to_owned())
         .collect();
     let n = components.len();
 
@@ -626,9 +626,9 @@ fn topic_name_for_path(path: &Path) -> String {
 // ─── Topic grouping ──────────────────────────────────────────────────────────
 
 /// A topic group: optional root directory and root-relative paths.
-type TopicGroup = (Option<PathBuf>, Vec<PathBuf>);
+type TopicGroup = (Option<Utf8PathBuf>, Vec<Utf8PathBuf>);
 
-fn find_common_prefix(paths: &[PathBuf]) -> Option<PathBuf> {
+fn find_common_prefix(paths: &[Utf8PathBuf]) -> Option<Utf8PathBuf> {
     if paths.len() < 2 {
         return None;
     }
@@ -652,8 +652,8 @@ fn find_common_prefix(paths: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn extract_topic_root(
-    topic_paths: &[PathBuf],
-    remapped_managed: &HashSet<PathBuf>,
+    topic_paths: &[Utf8PathBuf],
+    remapped_managed: &HashSet<Utf8PathBuf>,
 ) -> TopicGroup {
     if topic_paths.is_empty() {
         return (None, Vec::new());
@@ -662,7 +662,7 @@ fn extract_topic_root(
     // Single path: if it's a collapsed directory (has managed children), use it as root.
     if topic_paths.len() == 1 {
         let p = &topic_paths[0];
-        let mut children: Vec<PathBuf> = remapped_managed
+        let mut children: Vec<Utf8PathBuf> = remapped_managed
             .iter()
             .filter(|f| f.starts_with(p) && *f != p)
             .map(|f| f.strip_prefix(p).unwrap().to_path_buf())
@@ -676,7 +676,7 @@ fn extract_topic_root(
 
     // Multiple paths: use common prefix as root if one exists.
     if let Some(root) = find_common_prefix(topic_paths) {
-        let paths: Vec<PathBuf> = topic_paths
+        let paths: Vec<Utf8PathBuf> = topic_paths
             .iter()
             .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
             .collect();
@@ -688,21 +688,21 @@ fn extract_topic_root(
 
 fn group_into_topics(
     entries: Vec<TargetEntry>,
-    home: &Path,
+    home: &Utf8Path,
 ) -> Result<HashMap<String, TopicGroup>> {
-    let managed_files: HashSet<PathBuf> =
+    let managed_files: HashSet<Utf8PathBuf> =
         entries.into_iter().map(|e| e.target_rel_path).collect();
     let manifest_paths = compute_manifest_paths(&managed_files, home)?;
 
     // Remap AppData paths to .config for cross-platform manifest output.
-    let manifest_paths: Vec<PathBuf> =
+    let manifest_paths: Vec<Utf8PathBuf> =
         manifest_paths.iter().map(|p| remap_target_path(p)).collect();
 
-    let remapped_managed: HashSet<PathBuf> =
+    let remapped_managed: HashSet<Utf8PathBuf> =
         managed_files.iter().map(|p| remap_target_path(p)).collect();
 
-    let mut topics: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    let mut seen: HashSet<(String, PathBuf)> = HashSet::new();
+    let mut topics: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
+    let mut seen: HashSet<(String, Utf8PathBuf)> = HashSet::new();
 
     for path in manifest_paths {
         let topic = topic_name_for_path(&path);
@@ -743,7 +743,7 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
             format_args!("        {topic} = {{\n"),
         );
         if let Some(root) = root {
-            let r = root.to_string_lossy().replace('\\', "/");
+            let r = root.as_str().replace('\\', "/");
             let _ = std::fmt::Write::write_fmt(
                 &mut buf,
                 format_args!("            root = \"{r}\",\n"),
@@ -751,7 +751,7 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
         }
         buf.push_str("            paths = {");
         for (i, p) in paths.iter().enumerate() {
-            let s = p.to_string_lossy().replace('\\', "/");
+            let s = p.as_str().replace('\\', "/");
             if i == 0 {
                 buf.push('"');
             } else {
@@ -789,25 +789,27 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
 /// or if writing the manifest to the store fails.
 pub fn migrate(
     store: &PorchettaStore,
-    source_dir: &Path,
+    source_dir: &Utf8Path,
     yes: bool,
 ) -> Result<()> {
-    info!("Migrating chezmoi source directory: {}", source_dir.display());
+    info!("Migrating chezmoi source directory: {source_dir}");
 
     if !source_dir.is_dir() {
-        bail!("source directory '{}' does not exist", source_dir.display());
+        bail!("source directory '{source_dir}' does not exist");
     }
 
     let mut entries = Vec::new();
     let mut warnings = Warnings::default();
 
-    walk_source_dir(source_dir, Path::new(""), Path::new(""), &mut entries, &mut warnings)?;
+    walk_source_dir(source_dir, Utf8Path::new(""), Utf8Path::new(""), &mut entries, &mut warnings)?;
 
     let entry_count = entries.len();
     debug!("Resolved {entry_count} target entries from chezmoi source");
 
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    let topics = group_into_topics(entries, &home)?;
+    let home = Utf8PathBuf::try_from(
+        dirs::home_dir().context("Could not determine home directory")?
+    ).map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+    let topics = group_into_topics(entries, home.as_path())?;
     let topic_count = topics.len();
     let path_count: usize = topics.values().map(|(_, paths)| paths.len()).sum();
 
@@ -828,11 +830,11 @@ pub fn migrate(
         let (root, paths) = &topics[*topic];
         let path_list: Vec<String> = paths
             .iter()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.as_str().to_string())
             .collect();
         let root_display = root
             .as_ref()
-            .map(|r| format!(" [{}]", r.display()))
+            .map(|r| format!(" [{}]", {r}))
             .unwrap_or_default();
         ui::bullet(&format!("{}{}  ({})", topic, root_display, path_list.join(", ")));
     }
@@ -929,56 +931,56 @@ mod tests {
     #[test]
     fn test_collapse_fully_managed_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
         std::fs::create_dir_all(home.join("a/b")).unwrap();
         std::fs::write(home.join("a/b/c.txt"), "").unwrap();
         std::fs::write(home.join("a/b/d.txt"), "").unwrap();
         std::fs::write(home.join("a/x.txt"), "").unwrap(); // unmanaged sibling
 
-        let managed: HashSet<PathBuf> =
-            ["a/b/c.txt", "a/b/d.txt"].iter().map(PathBuf::from).collect();
+        let managed: HashSet<Utf8PathBuf> =
+            ["a/b/c.txt", "a/b/d.txt"].iter().map(Utf8PathBuf::from).collect();
         let paths = compute_manifest_paths(&managed, home).unwrap();
-        assert_eq!(paths, vec![PathBuf::from("a/b")]);
+        assert_eq!(paths, vec![Utf8PathBuf::from("a/b")]);
     }
 
     #[test]
     fn test_no_collapse_with_unmanaged() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
         std::fs::create_dir_all(home.join("a")).unwrap();
         std::fs::write(home.join("a/b.txt"), "").unwrap();
         std::fs::write(home.join("a/x.txt"), "").unwrap();
 
-        let managed: HashSet<PathBuf> = ["a/b.txt"].iter().map(PathBuf::from).collect();
+        let managed: HashSet<Utf8PathBuf> = ["a/b.txt"].iter().map(Utf8PathBuf::from).collect();
         let paths = compute_manifest_paths(&managed, home).unwrap();
-        assert_eq!(paths, vec![PathBuf::from("a/b.txt")]);
+        assert_eq!(paths, vec![Utf8PathBuf::from("a/b.txt")]);
     }
 
     #[test]
     fn test_partial_collapse() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
         std::fs::create_dir_all(home.join("a/b")).unwrap();
         std::fs::write(home.join("a/b/c.txt"), "").unwrap();
         std::fs::write(home.join("a/b/d.txt"), "").unwrap();
         std::fs::write(home.join("a/e.txt"), "").unwrap();
         std::fs::write(home.join("a/f.txt"), "").unwrap(); // unmanaged
 
-        let managed: HashSet<PathBuf> = ["a/b/c.txt", "a/b/d.txt", "a/e.txt"]
+        let managed: HashSet<Utf8PathBuf> = ["a/b/c.txt", "a/b/d.txt", "a/e.txt"]
             .iter()
-            .map(PathBuf::from)
+            .map(Utf8PathBuf::from)
             .collect();
         let paths = compute_manifest_paths(&managed, home).unwrap();
-        assert!(paths.contains(&PathBuf::from("a/b")));
-        assert!(paths.contains(&PathBuf::from("a/e.txt")));
-        assert!(!paths.contains(&PathBuf::from("a/b/c.txt")));
+        assert!(paths.contains(&Utf8PathBuf::from("a/b")));
+        assert!(paths.contains(&Utf8PathBuf::from("a/e.txt")));
+        assert!(!paths.contains(&Utf8PathBuf::from("a/b/c.txt")));
         assert_eq!(paths.len(), 2);
     }
 
     #[test]
     fn test_group_into_topics() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
 
         // Set up filesystem matching the managed files
         std::fs::create_dir_all(home.join(".config/nvim/lua")).unwrap();
@@ -998,49 +1000,49 @@ mod tests {
 
         let entries = vec![
             TargetEntry {
-                target_rel_path: PathBuf::from(".config/nvim/init.lua"),
+                target_rel_path: Utf8PathBuf::from(".config/nvim/init.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".config/nvim/lua/plugins.lua"),
+                target_rel_path: Utf8PathBuf::from(".config/nvim/lua/plugins.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".bashrc"),
+                target_rel_path: Utf8PathBuf::from(".bashrc"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".zshrc"),
+                target_rel_path: Utf8PathBuf::from(".zshrc"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".gitconfig"),
+                target_rel_path: Utf8PathBuf::from(".gitconfig"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".ssh/config"),
+                target_rel_path: Utf8PathBuf::from(".ssh/config"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".local/bin/my-script"),
+                target_rel_path: Utf8PathBuf::from(".local/bin/my-script"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from(".inputrc"),
+                target_rel_path: Utf8PathBuf::from(".inputrc"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
@@ -1050,34 +1052,34 @@ mod tests {
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 1 entry → not collapsed, so nvim (2 entries but lua is uncollapsed) → not collapsed
         let (nvim_root, nvim_paths) = topics.get("nvim").unwrap();
-        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
-        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
+        assert_eq!(nvim_root, &Some(Utf8PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("lua/plugins.lua")));
         let (shell_root, shell_paths) = topics.get("shell").unwrap();
         assert!(shell_root.is_none());
-        assert!(shell_paths.contains(&PathBuf::from(".bashrc")));
-        assert!(shell_paths.contains(&PathBuf::from(".zshrc")));
-        assert!(shell_paths.contains(&PathBuf::from(".inputrc")));
+        assert!(shell_paths.contains(&Utf8PathBuf::from(".bashrc")));
+        assert!(shell_paths.contains(&Utf8PathBuf::from(".zshrc")));
+        assert!(shell_paths.contains(&Utf8PathBuf::from(".inputrc")));
         assert_eq!(
             topics.get("git"),
-            Some(&(None, vec![PathBuf::from(".gitconfig")]))
+            Some(&(None, vec![Utf8PathBuf::from(".gitconfig")]))
         );
         // .ssh has unmanaged id_rsa → not collapsed
         assert_eq!(
             topics.get("ssh"),
-            Some(&(None, vec![PathBuf::from(".ssh/config")]))
+            Some(&(None, vec![Utf8PathBuf::from(".ssh/config")]))
         );
         // .local/bin has 1 entry → not collapsed
         assert_eq!(
             topics.get("bin"),
-            Some(&(None, vec![PathBuf::from(".local/bin/my-script")]))
+            Some(&(None, vec![Utf8PathBuf::from(".local/bin/my-script")]))
         );
     }
 
     #[test]
     fn test_appdata_remap_does_not_hide_unmanaged() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
         // Filesystem has AppData/Local/nvim with both managed and unmanaged files
         std::fs::create_dir_all(home.join("AppData/Local/nvim/lua")).unwrap();
         std::fs::write(home.join("AppData/Local/nvim/init.lua"), "").unwrap();
@@ -1086,13 +1088,13 @@ mod tests {
 
         let entries = vec![
             TargetEntry {
-                target_rel_path: PathBuf::from("AppData/Local/nvim/init.lua"),
+                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/init.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
+                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
@@ -1103,16 +1105,16 @@ mod tests {
         // Because of unmanaged.txt, .config/nvim must NOT collapse.
         // Each file should appear individually, remapped to .config/.
         let (nvim_root, nvim_paths) = topics.get("nvim").expect("nvim topic missing");
-        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
-        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
-        assert!(!nvim_paths.contains(&PathBuf::from(".config/nvim")));
+        assert_eq!(nvim_root, &Some(Utf8PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("lua/plugins.lua")));
+        assert!(!nvim_paths.contains(&Utf8PathBuf::from(".config/nvim")));
     }
 
     #[test]
     fn test_appdata_remap_collapse_when_fully_managed() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
         // Fully managed AppData/Local/nvim — lua has 2 entries so it collapses,
         // then nvim has 2 entries (init.lua + collapsed lua) so it also collapses.
         std::fs::create_dir_all(home.join("AppData/Local/nvim/lua")).unwrap();
@@ -1122,19 +1124,19 @@ mod tests {
 
         let entries = vec![
             TargetEntry {
-                target_rel_path: PathBuf::from("AppData/Local/nvim/init.lua"),
+                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/init.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
+                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
             },
             TargetEntry {
-                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/settings.lua"),
+                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/settings.lua"),
                 kind: FileKind::Regular,
                 template: false,
                 encrypted: false,
@@ -1144,10 +1146,10 @@ mod tests {
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 2 entries → collapses; nvim has 2 entries (init.lua + lua) → collapses
         let (nvim_root, nvim_paths) = topics.get("nvim").unwrap();
-        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
-        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from("lua/settings.lua")));
+        assert_eq!(nvim_root, &Some(Utf8PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("lua/plugins.lua")));
+        assert!(nvim_paths.contains(&Utf8PathBuf::from("lua/settings.lua")));
     }
 
     #[test]
@@ -1155,13 +1157,13 @@ mod tests {
         let mut topics = HashMap::new();
         topics.insert(
             "shell".to_string(),
-            (None, vec![PathBuf::from(".bashrc"), PathBuf::from(".zshrc")]),
+            (None, vec![Utf8PathBuf::from(".bashrc"), Utf8PathBuf::from(".zshrc")]),
         );
         topics.insert(
             "nvim".to_string(),
             (
-                Some(PathBuf::from(".config/nvim")),
-                vec![PathBuf::from("init.lua"), PathBuf::from("lua/plugins.lua")],
+                Some(Utf8PathBuf::from(".config/nvim")),
+                vec![Utf8PathBuf::from("init.lua"), Utf8PathBuf::from("lua/plugins.lua")],
             ),
         );
 
@@ -1173,7 +1175,7 @@ mod tests {
         assert_eq!(manifest.topics["nvim"].paths.len(), 2);
         assert_eq!(
             manifest.topics["nvim"].root,
-            Some(PathBuf::from(".config/nvim"))
+            Some(Utf8PathBuf::from(".config/nvim"))
         );
     }
 }

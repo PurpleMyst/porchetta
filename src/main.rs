@@ -1,6 +1,5 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
@@ -40,7 +39,7 @@ enum MigrateCommand {
     Chezmoi {
         /// Path to chezmoi source directory (default: ~/.local/share/chezmoi)
         #[arg(long, value_name = "DIR")]
-        source_dir: Option<PathBuf>,
+        source_dir: Option<Utf8PathBuf>,
         /// Do not prompt for confirmation before overwriting the manifest
         #[arg(long)]
         yes: bool,
@@ -78,7 +77,7 @@ fn main() -> Result<()> {
         Command::Init => {
             let _store = PorchettaStore::init().context("Failed to initialize store")?;
             ui::success("Initialized Porchetta store");
-            ui::muted(&format!("  {}", PorchettaStore::store_path()?.display()));
+            ui::muted(&format!("  {}", PorchettaStore::store_path()?));
         }
         Command::Show => {
             let store = PorchettaStore::load().context("Failed to load store")?;
@@ -92,7 +91,7 @@ fn main() -> Result<()> {
                 for (name, topic) in &manifest.topics {
                     ui::bullet(&format!("{name} ({} paths)", topic.paths.len()));
                     for path in &topic.paths {
-                        ui::muted(&format!("    {}", path.display()));
+                        ui::muted(&format!("    {path}"));
                     }
                 }
             }
@@ -137,11 +136,9 @@ fn main() -> Result<()> {
         } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let source_dir = source_dir.unwrap_or_else(|| {
-                dirs::home_dir()
-                    .expect("home directory")
-                    .join(".local")
-                    .join("share")
-                    .join("chezmoi")
+                let home = dirs::home_dir().expect("home directory");
+                Utf8PathBuf::try_from(home.join(".local").join("share").join("chezmoi"))
+                    .expect("chezmoi source path is not valid UTF-8")
             });
             porchetta::chezmoi::migrate(&store, &source_dir, yes)
                 .context("Failed to migrate from chezmoi")?;

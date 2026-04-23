@@ -1,8 +1,8 @@
 use std::collections::{HashSet, VecDeque};
 use std::ops::ControlFlow;
-use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
@@ -15,22 +15,22 @@ use crate::ui;
 
 enum ApplyOperation {
     Upsert {
-        relative_path: PathBuf,
+        relative_path: Utf8PathBuf,
         blob_oid: ObjectId,
     },
     Delete {
-        relative_path: PathBuf,
+        relative_path: Utf8PathBuf,
     },
 }
 
 /// Convert a platform path to a forward-slash string for git tree storage.
-fn to_tree_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+fn to_tree_path(path: &Utf8Path) -> String {
+    path.as_str().replace('\\', "/")
 }
 
-/// Convert a forward-slash path from a git tree to a platform `PathBuf`.
-fn from_tree_path(path: &str) -> PathBuf {
-    PathBuf::from(path)
+/// Convert a forward-slash path from a git tree to a platform `Utf8PathBuf`.
+fn from_tree_path(path: &str) -> Utf8PathBuf {
+    Utf8PathBuf::from(path)
 }
 
 pub struct PorchettaEngine {
@@ -66,7 +66,9 @@ impl PorchettaEngine {
     #[allow(clippy::too_many_lines)]
     pub fn sync(&mut self, verbose: bool) -> Result<()> {
         debug!("Starting sync operation");
-        let home = dirs::home_dir().context("Could not determine home directory")?;
+        let home = Utf8PathBuf::try_from(
+            dirs::home_dir().context("Could not determine home directory")?
+        ).map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
@@ -80,15 +82,14 @@ impl PorchettaEngine {
             debug!("Syncing topic '{name}'");
 
             let topic_base = match &info.root {
-                Some(root) if !root.as_os_str().is_empty() => home.join(root),
+                Some(root) if !root.as_str().is_empty() => home.join(root),
                 _ => home.clone(),
             };
 
             for p in &info.paths {
                 ensure!(
-                    !p.components().any(|c| c == std::path::Component::ParentDir),
-                    "Topic '{name}' path '{}' contains '..' which is not allowed",
-                    p.display()
+                    !p.components().any(|c| c == Utf8Component::ParentDir),
+                    "Topic '{name}' path '{p}' contains '..' which is not allowed"
                 );
             }
 
@@ -98,31 +99,31 @@ impl PorchettaEngine {
             for p in &info.paths {
                 let abs_path = topic_base.join(p);
                 if abs_path.is_file() {
-                    trace!("Found file: {}", abs_path.display());
+                    trace!("Found file: {abs_path}");
                     topic_files.insert(abs_path);
                 } else if abs_path.is_dir() {
-                    trace!("Scanning directory: {}", abs_path.display());
+                    trace!("Scanning directory: {abs_path}");
                     let mut queue = VecDeque::new();
                     queue.push_back(abs_path);
                     while let Some(p2) = queue.pop_front() {
                         if p2.is_file() {
-                            trace!("Found file: {}", p2.display());
+                            trace!("Found file: {p2}");
                             topic_files.insert(p2);
                         } else if p2.is_dir() {
-                            for entry in std::fs::read_dir(p2)? {
-                                queue.push_back(entry?.path());
+                            for entry in std::fs::read_dir(&p2)? {
+                                let path = Utf8PathBuf::try_from(entry?.path())
+                                    .context("non-UTF-8 path encountered during scan")?;
+                                queue.push_back(path);
                             }
                         } else {
                             bail!(
-                                "Path '{}' does not exist or is not a file/directory",
-                                p2.display()
+                                "Path '{p2}' does not exist or is not a file/directory"
                             );
                         }
                     }
                 } else {
                     bail!(
-                        "Path '{}' does not exist or is not a file/directory",
-                        abs_path.display()
+                        "Path '{abs_path}' does not exist or is not a file/directory"
                     );
                 }
             }
@@ -641,7 +642,7 @@ impl PorchettaEngine {
     }
 
     fn preflight_apply_operations(
-        topic_base: &Path,
+        topic_base: &Utf8Path,
         topic_name: &str,
         operations: &[ApplyOperation],
     ) -> Result<()> {
@@ -652,9 +653,7 @@ impl PorchettaEngine {
 
                     if abs_path.is_dir() {
                         bail!(
-                            "Topic '{}' cannot write file '{}' because it is a directory",
-                            topic_name,
-                            abs_path.display()
+                            "Topic '{topic_name}' cannot write file '{abs_path}' because it is a directory"
                         );
                     }
 
@@ -662,10 +661,7 @@ impl PorchettaEngine {
                         && parent.is_file()
                     {
                         bail!(
-                            "Topic '{}' cannot create '{}' because parent '{}' is a file",
-                            topic_name,
-                            abs_path.display(),
-                            parent.display()
+                            "Topic '{topic_name}' cannot create '{abs_path}' because parent '{parent}' is a file"
                         );
                     }
                 }
@@ -673,9 +669,7 @@ impl PorchettaEngine {
                     let abs_path = topic_base.join(relative_path);
                     if abs_path.is_dir() {
                         bail!(
-                            "Topic '{}' cannot delete '{}' as a file because it is a directory",
-                            topic_name,
-                            abs_path.display()
+                            "Topic '{topic_name}' cannot delete '{abs_path}' as a file because it is a directory"
                         );
                     }
                 }
@@ -687,7 +681,7 @@ impl PorchettaEngine {
 
     fn apply_operations(
         &self,
-        topic_base: &Path,
+        topic_base: &Utf8Path,
         topic_name: &str,
         operations: Vec<ApplyOperation>,
     ) -> Result<()> {
@@ -702,9 +696,7 @@ impl PorchettaEngine {
                     if let Some(parent) = abs_path.parent() {
                         std::fs::create_dir_all(parent).with_context(|| {
                             format!(
-                                "Failed to create parent directory '{}' for topic '{}'",
-                                parent.display(),
-                                topic_name
+                                "Failed to create parent directory '{parent}' for topic '{topic_name}'"
                             )
                         })?;
                     }
@@ -717,9 +709,7 @@ impl PorchettaEngine {
 
                     std::fs::write(&abs_path, &blob.data).with_context(|| {
                         format!(
-                            "Failed to write '{}' for topic '{}'",
-                            abs_path.display(),
-                            topic_name
+                            "Failed to write '{abs_path}' for topic '{topic_name}'"
                         )
                     })?;
                 }
@@ -728,9 +718,7 @@ impl PorchettaEngine {
                     if abs_path.exists() {
                         std::fs::remove_file(&abs_path).with_context(|| {
                             format!(
-                                "Failed to delete '{}' for topic '{}'",
-                                abs_path.display(),
-                                topic_name
+                                "Failed to delete '{abs_path}' for topic '{topic_name}'"
                             )
                         })?;
                     }
@@ -741,7 +729,7 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    fn diff_location_to_path(location: &gix::bstr::BStr) -> Result<PathBuf> {
+    fn diff_location_to_path(location: &gix::bstr::BStr) -> Result<Utf8PathBuf> {
         let relative_path = std::str::from_utf8(location.as_ref()).with_context(|| {
             format!("Diff path '{}' is not valid UTF-8", location.to_str_lossy())
         })?;

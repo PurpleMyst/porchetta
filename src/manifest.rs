@@ -1,6 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use anyhow::Result;
+use camino::Utf8PathBuf;
 use log::{debug, trace};
 use mlua::{Lua, Value};
 
@@ -13,8 +14,8 @@ pub struct Manifest {
 
 #[derive(Debug)]
 pub struct Topic {
-    pub root: Option<PathBuf>,
-    pub paths: Vec<PathBuf>,
+    pub root: Option<Utf8PathBuf>,
+    pub paths: Vec<Utf8PathBuf>,
 }
 
 impl Manifest {
@@ -42,9 +43,9 @@ impl Manifest {
                 .ok_or_else(|| anyhow::anyhow!("'paths' field must be a sequence"))?
                 .sequence_values::<String>()
                 .collect::<mlua::Result<_>>()?;
-            let paths: Vec<PathBuf> = paths
+            let paths: Vec<Utf8PathBuf> = paths
                 .into_iter()
-                .map(std::path::PathBuf::from)
+                .map(Utf8PathBuf::from)
                 .collect();
 
             trace!("Topic '{}' has {} paths", name, paths.len());
@@ -54,7 +55,7 @@ impl Manifest {
                 .and_then(|v| v.as_string())
                 .and_then(|s| {
                     let s = s.to_string_lossy();
-                    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
+                    if s.is_empty() { None } else { Some(Utf8PathBuf::from(s)) }
                 });
 
             topics.insert(name, Topic { root, paths });
@@ -102,7 +103,7 @@ mod tests {
         assert_eq!(manifest.topics["topic5"].paths.len(), 1);
         assert_eq!(
             manifest.topics["topic4"].root,
-            Some(PathBuf::from(".config/nvim"))
+            Some(Utf8PathBuf::from(".config/nvim"))
         );
         assert!(manifest.topics["topic1"].root.is_none());
         assert!(manifest.topics["topic5"].root.is_none()); // empty string normalized to None
