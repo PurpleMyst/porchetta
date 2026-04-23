@@ -1,21 +1,32 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use camino::Utf8PathBuf;
 use log::{debug, trace};
 use mlua::{Lua, Value};
 
 #[derive(Debug)]
 pub struct Manifest {
-    #[allow(dead_code)]
     pub lua: Lua,
     pub topics: HashMap<String, Topic>,
 }
 
-#[derive(Debug)]
 pub struct Topic {
     pub root: Option<Utf8PathBuf>,
     pub paths: Vec<Utf8PathBuf>,
+    pub to_repo: Option<mlua::RegistryKey>,
+    pub to_system: Option<mlua::RegistryKey>,
+}
+
+impl std::fmt::Debug for Topic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Topic")
+            .field("root", &self.root)
+            .field("paths", &self.paths)
+            .field("has_to_repo", &self.to_repo.is_some())
+            .field("has_to_system", &self.to_system.is_some())
+            .finish()
+    }
 }
 
 impl Manifest {
@@ -58,11 +69,64 @@ impl Manifest {
                     if s.is_empty() { None } else { Some(Utf8PathBuf::from(s)) }
                 });
 
-            topics.insert(name, Topic { root, paths });
+            let to_repo = match topic.get("to_repo") {
+                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Nil) | None => None,
+                Some(v) => bail!(
+                    "Topic '{name}' field 'to_repo' must be a function, got {}",
+                    v.type_name()
+                ),
+            };
+
+            let to_system = match topic.get("to_system") {
+                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Nil) | None => None,
+                Some(v) => bail!(
+                    "Topic '{name}' field 'to_system' must be a function, got {}",
+                    v.type_name()
+                ),
+            };
+
+            topics.insert(name, Topic { root, paths, to_repo, to_system });
         }
 
         debug!("Manifest loaded with {} topics", topics.len());
         Ok(Manifest { lua, topics })
+    }
+}
+
+/// Run a topic rewrite hook.
+///
+/// # Errors
+///
+/// Returns an error if the hook cannot be retrieved from the registry, if the
+/// call fails, or if the hook returns a non-string value.
+pub fn run_hook(
+    lua: &Lua,
+    topic_name: &str,
+    hook_name: &str,
+    key: &mlua::RegistryKey,
+    path: &str,
+    content: &[u8],
+) -> Result<Vec<u8>> {
+    let func: mlua::Function = lua
+        .registry_value(key)
+        .with_context(|| format!("Failed to retrieve {hook_name} hook for topic '{topic_name}'"))?;
+    let path_arg = lua
+        .create_string(path)
+        .with_context(|| format!("Failed to create path string for {hook_name}"))?;
+    let content_arg = lua
+        .create_string(content)
+        .with_context(|| format!("Failed to create content string for {hook_name}"))?;
+    let result: Value = func
+        .call((path_arg, content_arg))
+        .with_context(|| format!("{hook_name} hook for topic '{topic_name}' on '{path}' failed"))?;
+    match result {
+        Value::String(s) => Ok(s.as_bytes().to_vec()),
+        other => bail!(
+            "topic '{topic_name}': {hook_name} for '{path}' must return a string, got {}",
+            other.type_name()
+        ),
     }
 }
 
@@ -107,5 +171,68 @@ mod tests {
         );
         assert!(manifest.topics["topic1"].root.is_none());
         assert!(manifest.topics["topic5"].root.is_none()); // empty string normalized to None
+    }
+
+    #[test]
+    fn test_load_manifest_with_hooks() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {".gitconfig"},
+                    to_repo = function(path, content)
+                        return content
+                    end,
+                    to_system = function(path, content)
+                        return content
+                    end,
+                }
+            }
+        }"#;
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        assert_eq!(manifest.topics.len(), 1);
+        assert!(manifest.topics["git"].to_repo.is_some());
+        assert!(manifest.topics["git"].to_system.is_some());
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_non_function_hook() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {".gitconfig"},
+                    to_repo = "not a function",
+                }
+            }
+        }"#;
+        let result = Manifest::load(manifest_content.as_bytes());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("to_repo"));
+    }
+
+    #[test]
+    fn test_run_hook_transforms_content() {
+        let lua = Lua::new();
+        let func = lua
+            .load(r#"function(path, content) return content:gsub("hello", "goodbye") end"#)
+            .eval::<mlua::Function>()
+            .unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+        let result = run_hook(&lua, "test", "to_repo", &key, "a.txt", b"hello world").unwrap();
+        assert_eq!(result, b"goodbye world");
+    }
+
+    #[test]
+    fn test_run_hook_rejects_non_string_return() {
+        let lua = Lua::new();
+        let func = lua
+            .load(r"function(path, content) return 42 end")
+            .eval::<mlua::Function>()
+            .unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+        let result = run_hook(&lua, "test", "to_repo", &key, "a.txt", b"hello world");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must return a string"));
     }
 }

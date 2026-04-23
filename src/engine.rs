@@ -91,7 +91,8 @@ impl PorchettaEngine {
             .into_owned();
         debug!("Detected hostname: {hostname}");
 
-        for (name, info) in manifest.topics {
+        let topics: Vec<_> = manifest.topics.iter().collect();
+        for (name, info) in topics {
             debug!("Syncing topic '{name}'");
 
             let topic_base = match &info.root {
@@ -152,9 +153,14 @@ impl PorchettaEngine {
                 .repo
                 .edit_tree(self.store.repo.empty_tree().id())?;
             for file in topic_files {
-                let content = std::fs::read(&file)?;
-                let blob_oid = self.store.repo.write_blob(content)?;
                 let relative_path = to_tree_path(file.strip_prefix(&topic_base)?);
+                let content = std::fs::read(&file)?;
+                let content = if let Some(ref key) = info.to_repo {
+                    crate::manifest::run_hook(&manifest.lua, name, "to_repo", key, &relative_path, &content)?
+                } else {
+                    content
+                };
+                let blob_oid = self.store.repo.write_blob(content)?;
                 our_tree_editor.upsert(
                     relative_path,
                     gix::objs::tree::EntryKind::Blob,
@@ -165,7 +171,7 @@ impl PorchettaEngine {
             trace!("Built our tree: {our_tree_oid}");
 
             let their_tree_oid: ObjectId =
-                if let Some(commit_oid) = self.store.get_topic_head(&name)? {
+                if let Some(commit_oid) = self.store.get_topic_head(name)? {
                     trace!("Found their tree from topic head: {commit_oid}");
                     self.store
                         .repo
@@ -179,7 +185,7 @@ impl PorchettaEngine {
                 };
 
             let base_tree_oid: ObjectId =
-                if let Some(commit_oid) = self.store.get_topic_hostname_head(&name, &hostname)? {
+                if let Some(commit_oid) = self.store.get_topic_hostname_head(name, &hostname)? {
                     trace!("Found base tree from hostname head: {commit_oid}");
                     self.store
                         .repo
@@ -254,11 +260,11 @@ impl PorchettaEngine {
                         tree: merged_tree_oid.into(),
                         parents: self
                             .store
-                            .get_topic_head(&name)?
+                            .get_topic_head(name)?
                             .into_iter()
                             .chain(
                                 self.store
-                                    .get_topic_hostname_head(&name, &hostname)?
+                                    .get_topic_hostname_head(name, &hostname)?
                                     .into_iter(),
                             )
                             .collect(),
@@ -274,7 +280,7 @@ impl PorchettaEngine {
                         ui::bullet(&format!("pushed to repo ({commit_oid})"));
                     }
                     debug!("Created commit: {commit_oid}");
-                    self.store.update_topic_head(&name, commit_oid)?;
+                    self.store.update_topic_head(name, commit_oid)?;
                 }
             } else {
                 debug!("Topic '{name}' has no changes from repo");
@@ -310,12 +316,12 @@ impl PorchettaEngine {
                         ));
                     }
 
-                    Self::preflight_apply_operations(&topic_base, &name, &operations)
+                    Self::preflight_apply_operations(&topic_base, name, &operations)
                         .with_context(|| {
                             format!("Pre-flight checks failed for topic '{name}'")
                         })?;
 
-                    self.apply_operations(&topic_base, &name, operations)
+                    self.apply_operations(&topic_base, name, &manifest.lua, info.to_system.as_ref(), operations)
                         .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
                 }
             }
@@ -343,10 +349,10 @@ impl PorchettaEngine {
 
             if !dry_run {
                 self.store.update_topic_hostname_head(
-                    &name,
+                    name,
                     &hostname,
                     self.store
-                        .get_topic_head(&name)?
+                        .get_topic_head(name)?
                         .context("Missing topic head for existing topic")?,
                 )?;
             }
@@ -753,6 +759,8 @@ impl PorchettaEngine {
         &self,
         topic_base: &Utf8Path,
         topic_name: &str,
+        lua: &mlua::Lua,
+        to_system: Option<&mlua::RegistryKey>,
         operations: Vec<ApplyOperation>,
     ) -> Result<()> {
         for operation in operations {
@@ -777,11 +785,22 @@ impl PorchettaEngine {
                         )
                     })?;
 
-                    std::fs::write(&abs_path, &blob.data).with_context(|| {
-                        format!(
-                            "Failed to write '{abs_path}' for topic '{topic_name}'"
-                        )
-                    })?;
+                    if let Some(key) = to_system {
+                        let content = crate::manifest::run_hook(
+                            lua, topic_name, "to_system", key, relative_path.as_str(), &blob.data,
+                        )?;
+                        std::fs::write(&abs_path, content).with_context(|| {
+                            format!(
+                                "Failed to write '{abs_path}' for topic '{topic_name}'"
+                            )
+                        })?;
+                    } else {
+                        std::fs::write(&abs_path, &blob.data).with_context(|| {
+                            format!(
+                                "Failed to write '{abs_path}' for topic '{topic_name}'"
+                            )
+                        })?;
+                    }
                 }
                 ApplyOperation::Delete { relative_path } => {
                     let abs_path = topic_base.join(relative_path);
