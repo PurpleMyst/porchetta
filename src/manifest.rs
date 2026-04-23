@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
 use log::{debug, trace};
-use mlua::{Function, Lua, Value};
+use mlua::{Lua, Value};
 
 #[derive(Debug)]
 pub struct Manifest {
@@ -15,7 +15,6 @@ pub struct Manifest {
 pub struct Topic {
     pub root: Option<PathBuf>,
     pub paths: Vec<PathBuf>,
-    pub predicate: Option<Function>,
 }
 
 impl Manifest {
@@ -58,11 +57,7 @@ impl Manifest {
                     if s.is_empty() { None } else { Some(PathBuf::from(s)) }
                 });
 
-            let predicate = topic
-                .get("predicate")
-                .and_then(|v| v.as_function().cloned());
-
-            topics.insert(name, Topic { root, paths, predicate });
+            topics.insert(name, Topic { root, paths });
         }
 
         debug!("Manifest loaded with {} topics", topics.len());
@@ -85,8 +80,7 @@ mod tests {
                     paths = {"path/to/file3"}
                 },
                 topic3 = {
-                    paths = {"path/to/file4"},
-                    predicate = function(path) return path:match("%.txt$") end
+                    paths = {"path/to/file4"}
                 },
                 topic4 = {
                     root = ".config/nvim",
@@ -106,21 +100,11 @@ mod tests {
         assert_eq!(manifest.topics["topic3"].paths.len(), 1);
         assert_eq!(manifest.topics["topic4"].paths.len(), 2);
         assert_eq!(manifest.topics["topic5"].paths.len(), 1);
-        assert!(manifest.topics["topic1"].predicate.is_none());
-        assert!(manifest.topics["topic2"].predicate.is_none());
-        assert!(manifest.topics["topic3"].predicate.is_some());
-        assert!(manifest.topics["topic4"].predicate.is_none());
-        assert!(manifest.topics["topic5"].predicate.is_none());
-
         assert_eq!(
             manifest.topics["topic4"].root,
             Some(PathBuf::from(".config/nvim"))
         );
         assert!(manifest.topics["topic1"].root.is_none());
         assert!(manifest.topics["topic5"].root.is_none()); // empty string normalized to None
-
-        let predicate = manifest.topics["topic3"].predicate.as_ref().unwrap();
-        assert!(predicate.call::<bool>("file.txt").unwrap());
-        assert!(!predicate.call::<bool>("file.jpg").unwrap());
     }
 }
