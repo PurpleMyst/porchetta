@@ -470,91 +470,183 @@ impl Warnings {
     }
 }
 
-// ─── Topic grouping ──────────────────────────────────────────────────────────
+// ─── Manifest path computation ─────────────────────────────────────────────
 
-fn group_into_topics(entries: Vec<TargetEntry>) -> HashMap<String, Vec<PathBuf>> {
-    let mut topics: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    let mut seen: HashSet<(String, PathBuf)> = HashSet::new();
-
-    for entry in entries {
-        let path = entry.target_rel_path;
-        let components: Vec<String> = path
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let n = components.len();
-
-        let (topic, topic_path): (String, PathBuf) = if n == 1 {
-            let file = &components[0];
-            let topic = if matches!(
-                file.as_str(),
-                ".bashrc"
-                    | ".bash_profile"
-                    | ".bash_logout"
-                    | ".zshrc"
-                    | ".zprofile"
-                    | ".zshenv"
-                    | ".zlogin"
-                    | ".zlogout"
-                    | ".profile"
-                    | ".inputrc"
-            ) {
-                "shell"
-            } else if matches!(
-                file.as_str(),
-                ".gitconfig" | ".gitignore_global" | ".gitattributes_global"
-            ) {
-                "git"
-            } else if file == ".tmux.conf" {
-                "tmux"
-            } else if matches!(file.as_str(), ".vimrc" | ".nvimrc" | ".gvimrc") {
-                "vim"
-            } else {
-                "home"
-            };
-            (topic.to_string(), path)
-        } else if n >= 2 && components[0] == ".config" {
-            if n >= 3 {
-                (
-                    components[1].clone(),
-                    PathBuf::from(".config").join(&components[1]),
-                )
-            } else {
-                (components[1].clone(), path)
+/// Decides which paths appear in the manifest by collapsing directories that are
+/// fully managed (every filesystem entry is either a managed file or a collapsed
+/// subdirectory). Processes bottom-up so a parent's decision can reuse its
+/// children's decisions.
+fn compute_manifest_paths(
+    managed_files: &HashSet<PathBuf>,
+    home: &Path,
+) -> Result<Vec<PathBuf>> {
+    // Collect all directories that appear as ancestors of managed files.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for file in managed_files {
+        let mut parent = file.parent();
+        while let Some(p) = parent {
+            if p.as_os_str().is_empty() {
+                break;
             }
-        } else if n >= 1 && components[0] == ".ssh" {
-            ("ssh".to_string(), PathBuf::from(".ssh"))
-        } else if n >= 2 && components[0] == ".local" && components[1] == "bin" {
-            ("bin".to_string(), PathBuf::from(".local/bin"))
-        } else if n >= 3 && components[0] == ".local" && components[1] == "share" {
-            if n >= 4 {
-                (
-                    components[2].clone(),
-                    PathBuf::from(".local/share").join(&components[2]),
-                )
-            } else {
-                (components[2].clone(), path)
-            }
-        } else if n == 2 {
-            (components[0].clone(), path)
-        } else {
-            // n >= 3, arbitrary nesting: use second component, group up to it
-            let topic = components[1].clone();
-            let group_path: PathBuf = components[..2].iter().collect();
-            (topic, group_path)
-        };
-
-        let key = (topic.clone(), topic_path.clone());
-        if seen.insert(key) {
-            topics.entry(topic).or_default().push(topic_path);
+            dirs.push(p.to_path_buf());
+            parent = p.parent();
         }
     }
 
-    // Sort paths within each topic for stable output
+    dirs.sort();
+    dirs.dedup();
+    // Deepest first so children are resolved before their parents.
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+
+    let mut collapsed: HashSet<PathBuf> = HashSet::new();
+
+    for dir in &dirs {
+        let abs_dir = home.join(dir);
+
+        let all_managed = if abs_dir.is_dir() {
+            let mut ok = true;
+            for entry in std::fs::read_dir(&abs_dir)
+                .with_context(|| format!("failed to read dir {}", abs_dir.display()))?
+            {
+                let entry = entry?;
+                let entry_name = entry.file_name();
+                let entry_rel = dir.join(&entry_name);
+
+                let is_managed = if entry.file_type()?.is_dir() {
+                    collapsed.contains(&entry_rel)
+                } else {
+                    managed_files.contains(&entry_rel)
+                };
+
+                if !is_managed {
+                    ok = false;
+                    break;
+                }
+            }
+            ok
+        } else {
+            // Directory does not exist on the filesystem yet: trivially collapsible
+            // because there are no unmanaged files to accidentally capture.
+            true
+        };
+
+        if all_managed {
+            collapsed.insert(dir.clone());
+        }
+    }
+
+    // Keep only maximal collapsed dirs (not children of other collapsed dirs).
+    let mut maximal: Vec<PathBuf> = Vec::new();
+    for dir in &collapsed {
+        let is_child = collapsed
+            .iter()
+            .any(|other| dir != other && dir.starts_with(other));
+        if !is_child {
+            maximal.push(dir.clone());
+        }
+    }
+
+    // Final manifest paths: maximal collapsed dirs plus individual files
+    // that are not already covered by a collapsed ancestor.
+    let mut paths: Vec<PathBuf> = maximal.clone();
+    for file in managed_files {
+        let inside_collapsed = maximal.iter().any(|m| file.starts_with(m));
+        if !inside_collapsed {
+            paths.push(file.clone());
+        }
+    }
+
+    paths.sort();
+    Ok(paths)
+}
+
+fn topic_name_for_path(path: &Path) -> String {
+    let components: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let n = components.len();
+
+    if n == 1 {
+        let file = &components[0];
+        if matches!(
+            file.as_str(),
+            ".bashrc"
+                | ".bash_profile"
+                | ".bash_logout"
+                | ".zshrc"
+                | ".zprofile"
+                | ".zshenv"
+                | ".zlogin"
+                | ".zlogout"
+                | ".profile"
+                | ".inputrc"
+        ) {
+            return "shell".to_string();
+        }
+        if matches!(
+            file.as_str(),
+            ".gitconfig" | ".gitignore_global" | ".gitattributes_global"
+        ) {
+            return "git".to_string();
+        }
+        if file == ".tmux.conf" {
+            return "tmux".to_string();
+        }
+        if matches!(file.as_str(), ".vimrc" | ".nvimrc" | ".gvimrc") {
+            return "vim".to_string();
+        }
+        return "home".to_string();
+    }
+
+    if n >= 2 && components[0] == ".config" {
+        return components[1].clone();
+    }
+
+    if n >= 1 && components[0] == ".ssh" {
+        return "ssh".to_string();
+    }
+
+    if n >= 2 && components[0] == ".local" && components[1] == "bin" {
+        return "bin".to_string();
+    }
+
+    if n >= 3 && components[0] == ".local" && components[1] == "share" {
+        return components[2].clone();
+    }
+
+    if n == 2 {
+        return components[0].clone();
+    }
+
+    components[1].clone()
+}
+
+// ─── Topic grouping ──────────────────────────────────────────────────────────
+
+fn group_into_topics(
+    entries: Vec<TargetEntry>,
+    home: &Path,
+) -> Result<HashMap<String, Vec<PathBuf>>> {
+    let managed_files: HashSet<PathBuf> =
+        entries.into_iter().map(|e| e.target_rel_path).collect();
+    let manifest_paths = compute_manifest_paths(&managed_files, home)?;
+
+    let mut topics: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut seen: HashSet<(String, PathBuf)> = HashSet::new();
+
+    for path in manifest_paths {
+        let topic = topic_name_for_path(&path);
+        let key = (topic.clone(), path.clone());
+        if seen.insert(key) {
+            topics.entry(topic).or_default().push(path);
+        }
+    }
+
     for paths in topics.values_mut() {
         paths.sort();
     }
-    topics
+    Ok(topics)
 }
 
 // ─── Manifest serialization ──────────────────────────────────────────────────
@@ -631,15 +723,18 @@ pub fn migrate(
     let entry_count = entries.len();
     debug!("Resolved {entry_count} target entries from chezmoi source");
 
-    let topics = group_into_topics(entries);
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let topics = group_into_topics(entries, &home)?;
     let topic_count = topics.len();
+    let path_count: usize = topics.values().map(Vec::len).sum();
 
     // ── Preview ──────────────────────────────────────────────────────────────
 
     ui::header("Migration preview");
     ui::info(&format!(
-        "Migrated {entry_count} chezmoi entr{} into {topic_count} topic{}",
+        "Migrated {entry_count} chezmoi entr{} into {path_count} manifest path{} in {topic_count} topic{}",
         if entry_count == 1 { "y" } else { "ies" },
+        if path_count == 1 { "" } else { "s" },
         if topic_count == 1 { "" } else { "s" }
     ));
 
@@ -745,7 +840,75 @@ mod tests {
     }
 
     #[test]
+    fn test_collapse_fully_managed_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(home.join("a/b")).unwrap();
+        std::fs::write(home.join("a/b/c.txt"), "").unwrap();
+        std::fs::write(home.join("a/b/d.txt"), "").unwrap();
+        std::fs::write(home.join("a/x.txt"), "").unwrap(); // unmanaged sibling
+
+        let managed: HashSet<PathBuf> =
+            ["a/b/c.txt", "a/b/d.txt"].iter().map(PathBuf::from).collect();
+        let paths = compute_manifest_paths(&managed, home).unwrap();
+        assert_eq!(paths, vec![PathBuf::from("a/b")]);
+    }
+
+    #[test]
+    fn test_no_collapse_with_unmanaged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(home.join("a")).unwrap();
+        std::fs::write(home.join("a/b.txt"), "").unwrap();
+        std::fs::write(home.join("a/x.txt"), "").unwrap();
+
+        let managed: HashSet<PathBuf> = ["a/b.txt"].iter().map(PathBuf::from).collect();
+        let paths = compute_manifest_paths(&managed, home).unwrap();
+        assert_eq!(paths, vec![PathBuf::from("a/b.txt")]);
+    }
+
+    #[test]
+    fn test_partial_collapse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(home.join("a/b")).unwrap();
+        std::fs::write(home.join("a/b/c.txt"), "").unwrap();
+        std::fs::write(home.join("a/b/d.txt"), "").unwrap();
+        std::fs::write(home.join("a/e.txt"), "").unwrap();
+        std::fs::write(home.join("a/f.txt"), "").unwrap(); // unmanaged
+
+        let managed: HashSet<PathBuf> = ["a/b/c.txt", "a/b/d.txt", "a/e.txt"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let paths = compute_manifest_paths(&managed, home).unwrap();
+        assert!(paths.contains(&PathBuf::from("a/b")));
+        assert!(paths.contains(&PathBuf::from("a/e.txt")));
+        assert!(!paths.contains(&PathBuf::from("a/b/c.txt")));
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
     fn test_group_into_topics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        // Set up filesystem matching the managed files
+        std::fs::create_dir_all(home.join(".config/nvim/lua")).unwrap();
+        std::fs::write(home.join(".config/nvim/init.lua"), "").unwrap();
+        std::fs::write(home.join(".config/nvim/lua/plugins.lua"), "").unwrap();
+        std::fs::create_dir_all(home.join(".config/other_app")).unwrap(); // unmanaged
+        std::fs::write(home.join(".bashrc"), "").unwrap();
+        std::fs::write(home.join(".zshrc"), "").unwrap();
+        std::fs::write(home.join(".gitconfig"), "").unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".ssh/config"), "").unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "").unwrap(); // unmanaged
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        std::fs::write(home.join(".local/bin/my-script"), "").unwrap();
+        std::fs::create_dir_all(home.join(".local/share")).unwrap(); // unmanaged
+        std::fs::write(home.join(".inputrc"), "").unwrap();
+
         let entries = vec![
             TargetEntry {
                 target_rel_path: PathBuf::from(".config/nvim/init.lua"),
@@ -797,13 +960,13 @@ mod tests {
             },
         ];
 
-        let topics = group_into_topics(entries);
+        let topics = group_into_topics(entries, home).unwrap();
         assert_eq!(topics.get("nvim"), Some(&vec![PathBuf::from(".config/nvim")]));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".bashrc")));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".zshrc")));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".inputrc")));
         assert_eq!(topics.get("git"), Some(&vec![PathBuf::from(".gitconfig")]));
-        assert_eq!(topics.get("ssh"), Some(&vec![PathBuf::from(".ssh")]));
+        assert_eq!(topics.get("ssh"), Some(&vec![PathBuf::from(".ssh/config")]));
         assert_eq!(topics.get("bin"), Some(&vec![PathBuf::from(".local/bin")]));
     }
 
