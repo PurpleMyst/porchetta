@@ -287,6 +287,24 @@ struct TargetEntry {
     encrypted: bool,
 }
 
+// ─── Target path remapping ─────────────────────────────────────────────────
+
+/// Remaps Windows `AppData/Local` and `AppData/Roaming` prefixes to `.config`.
+fn remap_target_path(path: &Path) -> PathBuf {
+    let components: Vec<&str> = path
+        .components()
+        .map(|c| c.as_os_str().to_str().unwrap_or(""))
+        .collect();
+    if components.len() >= 2
+        && components[0] == "AppData"
+        && (components[1] == "Local" || components[1] == "Roaming")
+    {
+        let rest: PathBuf = components.iter().skip(2).collect();
+        return PathBuf::from(".config").join(rest);
+    }
+    path.to_path_buf()
+}
+
 // ─── Walker ──────────────────────────────────────────────────────────────────
 
 fn walk_source_dir(
@@ -305,6 +323,11 @@ fn walk_source_dir(
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
         let file_type = entry.file_type()?;
+
+        if file_type.is_dir() && name == ".git" {
+            trace!("skipping .git directory");
+            continue;
+        }
 
         if name.starts_with(".chezmoi") {
             if file_type.is_dir() && is_special_chezmoi_dir(&name) {
@@ -340,7 +363,7 @@ fn walk_source_dir(
                 continue;
             }
 
-            let new_target = target_prefix.join(&dir_attr.target_name);
+            let new_target = remap_target_path(&target_prefix.join(&dir_attr.target_name));
             let new_rel = rel_dir.join(name.as_ref());
             walk_source_dir(source_root, &new_rel, &new_target, entries, warnings)?;
         } else if file_type.is_file() || file_type.is_symlink() {
@@ -385,7 +408,7 @@ fn walk_source_dir(
                 warnings.encrypted += 1;
             }
 
-            let target_path = target_prefix.join(&file_attr.target_name);
+            let target_path = remap_target_path(&target_prefix.join(&file_attr.target_name));
             entries.push(TargetEntry {
                 target_rel_path: target_path,
                 kind: file_attr.kind,
