@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
@@ -27,6 +29,22 @@ enum Command {
     Edit,
     Show,
     Sync,
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum MigrateCommand {
+    Chezmoi {
+        /// Path to chezmoi source directory (default: ~/.local/share/chezmoi)
+        #[arg(long, value_name = "DIR")]
+        source_dir: Option<PathBuf>,
+        /// Do not prompt for confirmation before overwriting the manifest
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn init_logging(quiet: bool, verbose: bool) -> Result<()> {
@@ -113,6 +131,20 @@ fn main() -> Result<()> {
             ui::header("Syncing topics");
             engine.sync(cli.verbose).context("Failed to sync")?;
             ui::success("All topics synchronized");
+        }
+        Command::Migrate {
+            command: MigrateCommand::Chezmoi { source_dir, yes },
+        } => {
+            let store = PorchettaStore::load().context("Failed to load store")?;
+            let source_dir = source_dir.unwrap_or_else(|| {
+                dirs::home_dir()
+                    .expect("home directory")
+                    .join(".local")
+                    .join("share")
+                    .join("chezmoi")
+            });
+            porchetta::chezmoi::migrate(&store, &source_dir, yes)
+                .context("Failed to migrate from chezmoi")?;
         }
     }
 
