@@ -1,7 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use dirs::home_dir;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use log::{debug, info, trace};
 use smallvec::SmallVec;
 
@@ -48,6 +48,23 @@ impl PorchettaStore {
         let repo = gix::open(path)?;
         info!("Loaded Porchetta store from {path}");
         Ok(Self { repo })
+    }
+
+    /// Clones a remote Porchetta store into the given path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `git` is not available, if the clone fails, or if the
+    /// resulting repository cannot be opened.
+    pub fn clone_from(url: &str, path: &Utf8Path) -> Result<Self> {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--bare", url, path.as_str()])
+            .status()
+            .context("Failed to run git clone")?;
+        if !status.success() {
+            bail!("git clone failed with non-zero exit code");
+        }
+        Self::load_at(path)
     }
 
     /// Loads the Porchetta store from the default location.

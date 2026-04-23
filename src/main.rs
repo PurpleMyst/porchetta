@@ -32,6 +32,10 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    Clone {
+        /// URL of the remote Porchetta store
+        url: String,
+    },
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
@@ -142,6 +146,20 @@ fn main() -> Result<()> {
             } else {
                 ui::success("All topics synchronized");
             }
+        }
+        Command::Clone { url } => {
+            let store_path = PorchettaStore::store_path().context("Failed to determine store path")?;
+            if store_path.exists() {
+                anyhow::bail!(
+                    "Porchetta store already exists at {store_path}\n\
+                     Remove it first or run `porchetta init` if this is a new machine."
+                );
+            }
+            let _store = PorchettaStore::clone_from(&url, &store_path)
+                .with_context(|| format!("Failed to clone from {url}"))?;
+            ui::success("Cloned Porchetta store");
+            ui::muted(&format!("  {store_path}"));
+            ui::info("Run `porchetta sync` to apply the configuration to this machine.");
         }
         Command::Migrate {
             command: MigrateCommand::Chezmoi { source_dir, yes },
