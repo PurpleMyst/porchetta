@@ -16,6 +16,7 @@ pub struct Topic {
     pub paths: Vec<Utf8PathBuf>,
     pub to_repo: Option<mlua::RegistryKey>,
     pub to_system: Option<mlua::RegistryKey>,
+    pub should_include: Option<mlua::RegistryKey>,
 }
 
 impl std::fmt::Debug for Topic {
@@ -25,6 +26,7 @@ impl std::fmt::Debug for Topic {
             .field("paths", &self.paths)
             .field("has_to_repo", &self.to_repo.is_some())
             .field("has_to_system", &self.to_system.is_some())
+            .field("has_should_include", &self.should_include.is_some())
             .finish()
     }
 }
@@ -87,7 +89,16 @@ impl Manifest {
                 ),
             };
 
-            topics.insert(name, Topic { root, paths, to_repo, to_system });
+            let should_include = match topic.get("should_include") {
+                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Nil) | None => None,
+                Some(v) => bail!(
+                    "Topic '{name}' field 'should_include' must be a function, got {}",
+                    v.type_name()
+                ),
+            };
+
+            topics.insert(name, Topic { root, paths, to_repo, to_system, should_include });
         }
 
         debug!("Manifest loaded with {} topics", topics.len());
@@ -125,6 +136,36 @@ pub fn run_hook(
         Value::String(s) => Ok(s.as_bytes().to_vec()),
         other => bail!(
             "topic '{topic_name}': {hook_name} for '{path}' must return a string, got {}",
+            other.type_name()
+        ),
+    }
+}
+
+/// Run a topic `should_include` hook.
+///
+/// # Errors
+///
+/// Returns an error if the hook cannot be retrieved from the registry, if the
+/// call fails, or if the hook returns a non-boolean value.
+pub fn run_should_include(
+    lua: &Lua,
+    topic_name: &str,
+    key: &mlua::RegistryKey,
+    path: &str,
+) -> Result<bool> {
+    let func: mlua::Function = lua
+        .registry_value(key)
+        .with_context(|| format!("Failed to retrieve should_include hook for topic '{topic_name}'"))?;
+    let path_arg = lua
+        .create_string(path)
+        .with_context(|| "Failed to create path string for should_include".to_string())?;
+    let result: Value = func
+        .call(path_arg)
+        .with_context(|| format!("should_include hook for topic '{topic_name}' on '{path}' failed"))?;
+    match result {
+        Value::Boolean(b) => Ok(b),
+        other => bail!(
+            "topic '{topic_name}': should_include for '{path}' must return a boolean, got {}",
             other.type_name()
         ),
     }
@@ -223,6 +264,39 @@ mod tests {
     }
 
     #[test]
+    fn test_load_manifest_with_should_include() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {".gitconfig"},
+                    should_include = function(path)
+                        return path:sub(-4) ~= ".bak"
+                    end,
+                }
+            }
+        }"#;
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        assert_eq!(manifest.topics.len(), 1);
+        assert!(manifest.topics["git"].should_include.is_some());
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_non_function_should_include() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {".gitconfig"},
+                    should_include = true,
+                }
+            }
+        }"#;
+        let result = Manifest::load(manifest_content.as_bytes());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("should_include"));
+    }
+
+    #[test]
     fn test_run_hook_rejects_non_string_return() {
         let lua = Lua::new();
         let func = lua
@@ -234,5 +308,43 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must return a string"));
+    }
+
+    #[test]
+    fn test_run_should_include_true() {
+        let lua = Lua::new();
+        let func = lua
+            .load(r"function(path) return true end")
+            .eval::<mlua::Function>()
+            .unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+        let result = run_should_include(&lua, "test", &key, "a.txt").unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn test_run_should_include_false() {
+        let lua = Lua::new();
+        let func = lua
+            .load(r"function(path) return false end")
+            .eval::<mlua::Function>()
+            .unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+        let result = run_should_include(&lua, "test", &key, "a.txt").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_run_should_include_rejects_non_boolean_return() {
+        let lua = Lua::new();
+        let func = lua
+            .load(r"function(path) return 'yes' end")
+            .eval::<mlua::Function>()
+            .unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+        let result = run_should_include(&lua, "test", &key, "a.txt");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must return a boolean"));
     }
 }
