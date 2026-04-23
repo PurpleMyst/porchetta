@@ -363,7 +363,7 @@ fn walk_source_dir(
                 continue;
             }
 
-            let new_target = remap_target_path(&target_prefix.join(&dir_attr.target_name));
+            let new_target = target_prefix.join(&dir_attr.target_name);
             let new_rel = rel_dir.join(name.as_ref());
             walk_source_dir(source_root, &new_rel, &new_target, entries, warnings)?;
         } else if file_type.is_file() || file_type.is_symlink() {
@@ -408,7 +408,7 @@ fn walk_source_dir(
                 warnings.encrypted += 1;
             }
 
-            let target_path = remap_target_path(&target_prefix.join(&file_attr.target_name));
+            let target_path = target_prefix.join(&file_attr.target_name);
             entries.push(TargetEntry {
                 target_rel_path: target_path,
                 kind: file_attr.kind,
@@ -503,12 +503,14 @@ fn compute_manifest_paths(
     for dir in &dirs {
         let abs_dir = home.join(dir);
 
-        let all_managed = if abs_dir.is_dir() {
+        let (all_managed, entry_count) = if abs_dir.is_dir() {
             let mut ok = true;
+            let mut count = 0;
             for entry in std::fs::read_dir(&abs_dir)
                 .with_context(|| format!("failed to read dir {}", abs_dir.display()))?
             {
                 let entry = entry?;
+                count += 1;
                 let entry_name = entry.file_name();
                 let entry_rel = dir.join(&entry_name);
 
@@ -520,17 +522,16 @@ fn compute_manifest_paths(
 
                 if !is_managed {
                     ok = false;
-                    break;
                 }
             }
-            ok
+            (ok, count)
         } else {
             // Directory does not exist on the filesystem yet: trivially collapsible
             // because there are no unmanaged files to accidentally capture.
-            true
+            (true, 0)
         };
 
-        if all_managed {
+        if all_managed && entry_count >= 2 {
             collapsed.insert(dir.clone());
         }
     }
@@ -631,6 +632,10 @@ fn group_into_topics(
     let managed_files: HashSet<PathBuf> =
         entries.into_iter().map(|e| e.target_rel_path).collect();
     let manifest_paths = compute_manifest_paths(&managed_files, home)?;
+
+    // Remap AppData paths to .config for cross-platform manifest output.
+    let manifest_paths: Vec<PathBuf> =
+        manifest_paths.iter().map(|p| remap_target_path(p)).collect();
 
     let mut topics: HashMap<String, Vec<PathBuf>> = HashMap::new();
     let mut seen: HashSet<(String, PathBuf)> = HashSet::new();
@@ -961,13 +966,93 @@ mod tests {
         ];
 
         let topics = group_into_topics(entries, home).unwrap();
-        assert_eq!(topics.get("nvim"), Some(&vec![PathBuf::from(".config/nvim")]));
+        // lua has 1 entry → not collapsed, so nvim (2 entries but lua is uncollapsed) → not collapsed
+        let nvim_paths = topics.get("nvim").unwrap();
+        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/init.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/lua/plugins.lua")));
+        assert!(!nvim_paths.contains(&PathBuf::from(".config/nvim")));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".bashrc")));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".zshrc")));
         assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".inputrc")));
         assert_eq!(topics.get("git"), Some(&vec![PathBuf::from(".gitconfig")]));
+        // .ssh has unmanaged id_rsa → not collapsed
         assert_eq!(topics.get("ssh"), Some(&vec![PathBuf::from(".ssh/config")]));
-        assert_eq!(topics.get("bin"), Some(&vec![PathBuf::from(".local/bin")]));
+        // .local/bin has 1 entry → not collapsed
+        assert_eq!(
+            topics.get("bin"),
+            Some(&vec![PathBuf::from(".local/bin/my-script")])
+        );
+    }
+
+    #[test]
+    fn test_appdata_remap_does_not_hide_unmanaged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // Filesystem has AppData/Local/nvim with both managed and unmanaged files
+        std::fs::create_dir_all(home.join("AppData/Local/nvim/lua")).unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/init.lua"), "").unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/lua/plugins.lua"), "").unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/unmanaged.txt"), "").unwrap();
+
+        let entries = vec![
+            TargetEntry {
+                target_rel_path: PathBuf::from("AppData/Local/nvim/init.lua"),
+                kind: FileKind::Regular,
+                template: false,
+                encrypted: false,
+            },
+            TargetEntry {
+                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
+                kind: FileKind::Regular,
+                template: false,
+                encrypted: false,
+            },
+        ];
+
+        let topics = group_into_topics(entries, home).unwrap();
+        // Because of unmanaged.txt, .config/nvim must NOT collapse.
+        // Each file should appear individually, remapped to .config/.
+        let nvim_paths = topics.get("nvim").expect("nvim topic missing");
+        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/init.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/lua/plugins.lua")));
+        assert!(!nvim_paths.contains(&PathBuf::from(".config/nvim")));
+    }
+
+    #[test]
+    fn test_appdata_remap_collapse_when_fully_managed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // Fully managed AppData/Local/nvim — lua has 2 entries so it collapses,
+        // then nvim has 2 entries (init.lua + collapsed lua) so it also collapses.
+        std::fs::create_dir_all(home.join("AppData/Local/nvim/lua")).unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/init.lua"), "").unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/lua/plugins.lua"), "").unwrap();
+        std::fs::write(home.join("AppData/Local/nvim/lua/settings.lua"), "").unwrap();
+
+        let entries = vec![
+            TargetEntry {
+                target_rel_path: PathBuf::from("AppData/Local/nvim/init.lua"),
+                kind: FileKind::Regular,
+                template: false,
+                encrypted: false,
+            },
+            TargetEntry {
+                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
+                kind: FileKind::Regular,
+                template: false,
+                encrypted: false,
+            },
+            TargetEntry {
+                target_rel_path: PathBuf::from("AppData/Local/nvim/lua/settings.lua"),
+                kind: FileKind::Regular,
+                template: false,
+                encrypted: false,
+            },
+        ];
+
+        let topics = group_into_topics(entries, home).unwrap();
+        // lua has 2 entries → collapses; nvim has 2 entries (init.lua + lua) → collapses
+        assert_eq!(topics.get("nvim"), Some(&vec![PathBuf::from(".config/nvim")]));
     }
 
     #[test]
