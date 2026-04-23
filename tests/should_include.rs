@@ -27,7 +27,7 @@ fn test_should_include_filters_files() {
     std::fs::write(topic_dir.join("config.txt"), "hello").unwrap();
     std::fs::write(topic_dir.join("debug.log"), "log data").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -35,7 +35,7 @@ fn test_should_include_filters_files() {
         .get_topic_head("test")
         .unwrap()
         .expect("topic head should exist");
-    let tree = store.repo.find_object(head).unwrap().peel_to_tree().unwrap();
+    let tree = store.find_object(head).unwrap().peel_to_tree().unwrap();
 
     assert!(
         tree.find_entry("config.txt").is_some(),
@@ -76,7 +76,7 @@ fn test_should_include_filters_directory_recursion() {
     std::fs::create_dir_all(topic_dir.join("cache")).unwrap();
     std::fs::write(topic_dir.join("cache").join("file.txt"), "cached").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -84,7 +84,7 @@ fn test_should_include_filters_directory_recursion() {
         .get_topic_head("test")
         .unwrap()
         .expect("topic head should exist");
-    let tree = store.repo.find_object(head).unwrap().peel_to_tree().unwrap();
+    let tree = store.find_object(head).unwrap().peel_to_tree().unwrap();
 
     assert!(
         tree.find_entry("config.txt").is_some(),

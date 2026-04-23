@@ -3,9 +3,76 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
+use porchetta::resolver::{ConflictResolver, TreeConflictResolution};
 use porchetta::manifest::Manifest;
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
+
+/// Interactive resolver that prompts the user via the terminal.
+struct InteractiveResolver;
+
+impl ConflictResolver for InteractiveResolver {
+    fn resolve_tree_conflict(&self, prompt: &str) -> anyhow::Result<TreeConflictResolution> {
+        let choice = inquire::Select::new(
+            prompt,
+            vec!["Keep local (ours)", "Keep remote (theirs)", "Abort sync"],
+        )
+        .prompt()
+        .context("User canceled conflict resolution")?;
+
+        match choice {
+            "Keep local (ours)" => Ok(TreeConflictResolution::KeepOurs),
+            "Keep remote (theirs)" => Ok(TreeConflictResolution::KeepTheirs),
+            "Abort sync" => Ok(TreeConflictResolution::Abort),
+            _ => anyhow::bail!("Invalid conflict resolution choice"),
+        }
+    }
+
+    fn choose_entry_kind(
+        &self,
+        _prompt: &str,
+        ours: gix::objs::tree::EntryKind,
+        theirs: gix::objs::tree::EntryKind,
+    ) -> anyhow::Result<gix::objs::tree::EntryKind> {
+        let choice = inquire::Select::new(
+            "Local and remote entries have different kinds. Which should be used?",
+            vec![
+                format!("Local ({ours:?})"),
+                format!("Remote ({theirs:?})"),
+            ],
+        )
+        .prompt()
+        .context("User canceled entry kind selection")?;
+
+        if choice.starts_with("Local") {
+            Ok(ours)
+        } else {
+            Ok(theirs)
+        }
+    }
+
+    fn edit_blob(&self, content: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let mut temp_file = tempfile::Builder::new()
+            .prefix("porchetta_conflict")
+            .suffix(".tmp")
+            .tempfile()
+            .context("Failed to create temp file for conflict editing")?;
+        std::io::Write::write_all(&mut temp_file, content)
+            .context("Failed to write conflict content to temp file")?;
+
+        let editor = porchetta::util::get_editor()
+            .context("Failed to determine editor")?;
+        let status = std::process::Command::new(&editor)
+            .arg(temp_file.path())
+            .status()
+            .context("Failed to launch editor")?;
+        if !status.success() {
+            anyhow::bail!("Editor exited with non-zero status");
+        }
+
+        std::fs::read(temp_file.path()).context("Failed to read edited conflict content")
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "porchetta", about = "Dotfile manager with topics and conflict resolution")]
@@ -110,7 +177,7 @@ fn main() -> Result<()> {
         }
         Command::Edit => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store);
+            let mut engine = PorchettaEngine::new(store, InteractiveResolver);
 
             let editor = porchetta::util::get_editor()
                 .context("Failed to determine editor")?;
@@ -138,7 +205,7 @@ fn main() -> Result<()> {
         }
         Command::Sync { dry_run, offline } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store);
+            let mut engine = PorchettaEngine::new(store, InteractiveResolver);
             if dry_run {
                 ui::header("Syncing topics (dry run)");
             } else {

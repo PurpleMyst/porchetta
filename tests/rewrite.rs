@@ -26,7 +26,7 @@ fn test_capture_rewrite() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "my SECRET value").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -34,7 +34,7 @@ fn test_capture_rewrite() {
         .get_topic_head("test")
         .unwrap()
         .expect("topic head should exist");
-    let tree = store.repo.find_object(head).unwrap().peel_to_tree().unwrap();
+    let tree = store.find_object(head).unwrap().peel_to_tree().unwrap();
     let entry = tree
         .find_entry("config.txt")
         .expect("config.txt should be in tree");
@@ -72,7 +72,7 @@ fn test_apply_rewrite() {
     std::fs::write(topic_dir.join("config.txt"), "initial").unwrap();
 
     // First sync: capture initial state and push it.
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Manually create a new commit on the topic branch with repo-specific content.
@@ -82,14 +82,13 @@ fn test_apply_rewrite() {
         .unwrap()
         .expect("topic head should exist");
     let old_tree_id = store
-        .repo
         .find_object(head)
         .unwrap()
         .peel_to_tree()
         .unwrap()
         .id();
-    let new_blob = store.repo.write_blob("hello REPO").unwrap();
-    let mut tree_editor = store.repo.edit_tree(old_tree_id).unwrap();
+    let new_blob = store.write_blob("hello REPO").unwrap();
+    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
     tree_editor
         .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
         .unwrap();
@@ -101,7 +100,6 @@ fn test_apply_rewrite() {
         time: gix::date::Time::now_utc(),
     };
     let new_commit = store
-        .repo
         .write_object(gix::objs::Commit {
             tree: new_tree_id.into(),
             parents: [head].into(),
@@ -116,7 +114,7 @@ fn test_apply_rewrite() {
     store.update_topic_head("test", new_commit).unwrap();
 
     // Sync again: remote change should be transformed by to_system.
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let system_content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
@@ -150,14 +148,14 @@ fn test_rewrite_idempotence() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "hello SYSTEM").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head_after_first = store.get_topic_head("test").unwrap().unwrap();
 
     // Sync a second time with identical system state.
-    let mut engine = PorchettaEngine::with_home(store, home.clone());
+    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();

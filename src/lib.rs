@@ -1,6 +1,14 @@
+pub mod apply;
+pub mod capture;
 pub mod chezmoi;
+pub mod diff;
 pub mod engine;
+pub mod hooks;
 pub mod manifest;
+pub mod merge;
+pub mod path_util;
+pub mod resolver;
+pub mod scan;
 pub mod store;
 pub mod ui;
 pub mod util;
