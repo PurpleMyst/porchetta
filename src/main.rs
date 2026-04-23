@@ -64,19 +64,13 @@ enum MigrateCommand {
     },
 }
 
-fn init_logging(quiet: bool, verbose: bool) -> Result<()> {
+fn init_logging(_quiet: bool, _verbose: bool) -> Result<()> {
     let log_dir = dirs::data_local_dir()
         .context("Could not determine local data directory")?
         .join("porchetta")
         .join("logs");
 
-    let spec = match (quiet, verbose) {
-        (true, _) => "warn",
-        (_, true) => "debug",
-        _ => "info",
-    };
-
-    flexi_logger::Logger::try_with_str(spec)?
+    flexi_logger::Logger::try_with_str("trace")?
         .log_to_file(flexi_logger::FileSpec::default().directory(log_dir))
         .duplicate_to_stderr(flexi_logger::Duplicate::Warn)
         .append()

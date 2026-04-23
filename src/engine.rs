@@ -173,11 +173,18 @@ impl PorchettaEngine {
                     let mut queue = VecDeque::new();
                     queue.push_back(abs_path);
                     while let Some(p2) = queue.pop_front() {
+                        // Always skip .git directories; causes weird problems.
+                        if p2.file_name() == Some(".git") {
+                            debug!("Skipping .git directory at '{p2}'");
+                            continue;
+                        }
+
                         if p2.is_file() {
                             let relative_path = to_tree_path(p2.strip_prefix(&topic_base)?);
                             if let Some(ref key) = info.should_include
                                 && !crate::manifest::run_should_include(&manifest.lua, name, key, &relative_path)?
                             {
+                                debug!("Excluding file '{p2}' based on should_include hook");
                                 continue;
                             }
                             trace!("Found file: {p2}");
@@ -187,8 +194,10 @@ impl PorchettaEngine {
                             if let Some(ref key) = info.should_include
                                 && !crate::manifest::run_should_include(&manifest.lua, name, key, &relative_path)?
                             {
+                                debug!("Excluding directory '{p2}' based on should_include hook");
                                 continue;
                             }
+                            trace!("Queueing directory: {p2}");
                             for entry in std::fs::read_dir(&p2)? {
                                 let path = Utf8PathBuf::try_from(entry?.path())
                                     .context("non-UTF-8 path encountered during scan")?;
