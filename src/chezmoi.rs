@@ -625,10 +625,71 @@ fn topic_name_for_path(path: &Path) -> String {
 
 // ─── Topic grouping ──────────────────────────────────────────────────────────
 
+/// A topic group: optional root directory and root-relative paths.
+type TopicGroup = (Option<PathBuf>, Vec<PathBuf>);
+
+fn find_common_prefix(paths: &[PathBuf]) -> Option<PathBuf> {
+    if paths.len() < 2 {
+        return None;
+    }
+    let first = &paths[0];
+    let mut prefix_len = first.components().count();
+    for path in &paths[1..] {
+        let mut common = 0;
+        for (a, b) in first.components().zip(path.components()) {
+            if a == b {
+                common += 1;
+            } else {
+                break;
+            }
+        }
+        prefix_len = prefix_len.min(common);
+    }
+    if prefix_len == 0 {
+        return None;
+    }
+    Some(first.components().take(prefix_len).collect())
+}
+
+fn extract_topic_root(
+    topic_paths: &[PathBuf],
+    remapped_managed: &HashSet<PathBuf>,
+) -> TopicGroup {
+    if topic_paths.is_empty() {
+        return (None, Vec::new());
+    }
+
+    // Single path: if it's a collapsed directory (has managed children), use it as root.
+    if topic_paths.len() == 1 {
+        let p = &topic_paths[0];
+        let mut children: Vec<PathBuf> = remapped_managed
+            .iter()
+            .filter(|f| f.starts_with(p) && *f != p)
+            .map(|f| f.strip_prefix(p).unwrap().to_path_buf())
+            .collect();
+        if !children.is_empty() {
+            children.sort();
+            return (Some(p.clone()), children);
+        }
+        return (None, topic_paths.to_vec());
+    }
+
+    // Multiple paths: use common prefix as root if one exists.
+    if let Some(root) = find_common_prefix(topic_paths) {
+        let paths: Vec<PathBuf> = topic_paths
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
+            .collect();
+        return (Some(root), paths);
+    }
+
+    (None, topic_paths.to_vec())
+}
+
 fn group_into_topics(
     entries: Vec<TargetEntry>,
     home: &Path,
-) -> Result<HashMap<String, Vec<PathBuf>>> {
+) -> Result<HashMap<String, TopicGroup>> {
     let managed_files: HashSet<PathBuf> =
         entries.into_iter().map(|e| e.target_rel_path).collect();
     let manifest_paths = compute_manifest_paths(&managed_files, home)?;
@@ -636,6 +697,9 @@ fn group_into_topics(
     // Remap AppData paths to .config for cross-platform manifest output.
     let manifest_paths: Vec<PathBuf> =
         manifest_paths.iter().map(|p| remap_target_path(p)).collect();
+
+    let remapped_managed: HashSet<PathBuf> =
+        managed_files.iter().map(|p| remap_target_path(p)).collect();
 
     let mut topics: HashMap<String, Vec<PathBuf>> = HashMap::new();
     let mut seen: HashSet<(String, PathBuf)> = HashSet::new();
@@ -651,12 +715,19 @@ fn group_into_topics(
     for paths in topics.values_mut() {
         paths.sort();
     }
-    Ok(topics)
+
+    let mut result = HashMap::new();
+    for (topic, paths) in topics {
+        let (root, rel_paths) = extract_topic_root(&paths, &remapped_managed);
+        result.insert(topic, (root, rel_paths));
+    }
+
+    Ok(result)
 }
 
 // ─── Manifest serialization ──────────────────────────────────────────────────
 
-fn generate_manifest(topics: &HashMap<String, Vec<PathBuf>>) -> Result<Vec<u8>> {
+fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
     let mut buf = String::new();
     buf.push_str("return {\n");
     buf.push_str("    topics = {\n");
@@ -666,11 +737,18 @@ fn generate_manifest(topics: &HashMap<String, Vec<PathBuf>>) -> Result<Vec<u8>> 
     topic_names.sort();
 
     for topic in topic_names {
-        let paths = &topics[topic];
+        let (root, paths) = &topics[topic];
         let _ = std::fmt::Write::write_fmt(
             &mut buf,
             format_args!("        {topic} = {{\n"),
         );
+        if let Some(root) = root {
+            let r = root.to_string_lossy().replace('\\', "/");
+            let _ = std::fmt::Write::write_fmt(
+                &mut buf,
+                format_args!("            root = \"{r}\",\n"),
+            );
+        }
         buf.push_str("            paths = {");
         for (i, p) in paths.iter().enumerate() {
             let s = p.to_string_lossy().replace('\\', "/");
@@ -731,7 +809,7 @@ pub fn migrate(
     let home = dirs::home_dir().context("Could not determine home directory")?;
     let topics = group_into_topics(entries, &home)?;
     let topic_count = topics.len();
-    let path_count: usize = topics.values().map(Vec::len).sum();
+    let path_count: usize = topics.values().map(|(_, paths)| paths.len()).sum();
 
     // ── Preview ──────────────────────────────────────────────────────────────
 
@@ -747,12 +825,16 @@ pub fn migrate(
     topic_names.sort();
 
     for topic in &topic_names {
-        let paths = &topics[*topic];
+        let (root, paths) = &topics[*topic];
         let path_list: Vec<String> = paths
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        ui::bullet(&format!("{}  ({})", topic, path_list.join(", ")));
+        let root_display = root
+            .as_ref()
+            .map(|r| format!(" [{}]", r.display()))
+            .unwrap_or_default();
+        ui::bullet(&format!("{}{}  ({})", topic, root_display, path_list.join(", ")));
     }
 
     if warnings.has_any() {
@@ -967,20 +1049,28 @@ mod tests {
 
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 1 entry → not collapsed, so nvim (2 entries but lua is uncollapsed) → not collapsed
-        let nvim_paths = topics.get("nvim").unwrap();
-        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/init.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/lua/plugins.lua")));
-        assert!(!nvim_paths.contains(&PathBuf::from(".config/nvim")));
-        assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".bashrc")));
-        assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".zshrc")));
-        assert!(topics.get("shell").unwrap().contains(&PathBuf::from(".inputrc")));
-        assert_eq!(topics.get("git"), Some(&vec![PathBuf::from(".gitconfig")]));
+        let (nvim_root, nvim_paths) = topics.get("nvim").unwrap();
+        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
+        let (shell_root, shell_paths) = topics.get("shell").unwrap();
+        assert!(shell_root.is_none());
+        assert!(shell_paths.contains(&PathBuf::from(".bashrc")));
+        assert!(shell_paths.contains(&PathBuf::from(".zshrc")));
+        assert!(shell_paths.contains(&PathBuf::from(".inputrc")));
+        assert_eq!(
+            topics.get("git"),
+            Some(&(None, vec![PathBuf::from(".gitconfig")]))
+        );
         // .ssh has unmanaged id_rsa → not collapsed
-        assert_eq!(topics.get("ssh"), Some(&vec![PathBuf::from(".ssh/config")]));
+        assert_eq!(
+            topics.get("ssh"),
+            Some(&(None, vec![PathBuf::from(".ssh/config")]))
+        );
         // .local/bin has 1 entry → not collapsed
         assert_eq!(
             topics.get("bin"),
-            Some(&vec![PathBuf::from(".local/bin/my-script")])
+            Some(&(None, vec![PathBuf::from(".local/bin/my-script")]))
         );
     }
 
@@ -1012,9 +1102,10 @@ mod tests {
         let topics = group_into_topics(entries, home).unwrap();
         // Because of unmanaged.txt, .config/nvim must NOT collapse.
         // Each file should appear individually, remapped to .config/.
-        let nvim_paths = topics.get("nvim").expect("nvim topic missing");
-        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/init.lua")));
-        assert!(nvim_paths.contains(&PathBuf::from(".config/nvim/lua/plugins.lua")));
+        let (nvim_root, nvim_paths) = topics.get("nvim").expect("nvim topic missing");
+        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
         assert!(!nvim_paths.contains(&PathBuf::from(".config/nvim")));
     }
 
@@ -1052,7 +1143,11 @@ mod tests {
 
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 2 entries → collapses; nvim has 2 entries (init.lua + lua) → collapses
-        assert_eq!(topics.get("nvim"), Some(&vec![PathBuf::from(".config/nvim")]));
+        let (nvim_root, nvim_paths) = topics.get("nvim").unwrap();
+        assert_eq!(nvim_root, &Some(PathBuf::from(".config/nvim")));
+        assert!(nvim_paths.contains(&PathBuf::from("init.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from("lua/plugins.lua")));
+        assert!(nvim_paths.contains(&PathBuf::from("lua/settings.lua")));
     }
 
     #[test]
@@ -1060,14 +1155,25 @@ mod tests {
         let mut topics = HashMap::new();
         topics.insert(
             "shell".to_string(),
-            vec![PathBuf::from(".bashrc"), PathBuf::from(".zshrc")],
+            (None, vec![PathBuf::from(".bashrc"), PathBuf::from(".zshrc")]),
         );
-        topics.insert("nvim".to_string(), vec![PathBuf::from(".config/nvim")]);
+        topics.insert(
+            "nvim".to_string(),
+            (
+                Some(PathBuf::from(".config/nvim")),
+                vec![PathBuf::from("init.lua"), PathBuf::from("lua/plugins.lua")],
+            ),
+        );
 
         let bytes = generate_manifest(&topics).unwrap();
         let manifest = Manifest::load(&bytes).unwrap();
         assert_eq!(manifest.topics.len(), 2);
         assert_eq!(manifest.topics["shell"].paths.len(), 2);
-        assert_eq!(manifest.topics["nvim"].paths.len(), 1);
+        assert!(manifest.topics["shell"].root.is_none());
+        assert_eq!(manifest.topics["nvim"].paths.len(), 2);
+        assert_eq!(
+            manifest.topics["nvim"].root,
+            Some(PathBuf::from(".config/nvim"))
+        );
     }
 }

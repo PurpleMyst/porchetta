@@ -23,6 +23,16 @@ enum ApplyOperation {
     },
 }
 
+/// Convert a platform path to a forward-slash string for git tree storage.
+fn to_tree_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Convert a forward-slash path from a git tree to a platform `PathBuf`.
+fn from_tree_path(path: &str) -> PathBuf {
+    PathBuf::from(path)
+}
+
 pub struct PorchettaEngine {
     store: PorchettaStore,
 }
@@ -69,11 +79,24 @@ impl PorchettaEngine {
         for (name, info) in manifest.topics {
             debug!("Syncing topic '{name}'");
 
+            let topic_base = match &info.root {
+                Some(root) if !root.as_os_str().is_empty() => home.join(root),
+                _ => home.clone(),
+            };
+
+            for p in &info.paths {
+                ensure!(
+                    !p.components().any(|c| c == std::path::Component::ParentDir),
+                    "Topic '{name}' path '{}' contains '..' which is not allowed",
+                    p.display()
+                );
+            }
+
             // Capture and create system ("our") tree.
             let mut topic_files = HashSet::new();
 
             for p in &info.paths {
-                let abs_path = home.join(p);
+                let abs_path = topic_base.join(p);
                 if abs_path.is_file() {
                     trace!("Found file: {}", abs_path.display());
                     topic_files.insert(abs_path);
@@ -117,12 +140,7 @@ impl PorchettaEngine {
             for file in topic_files {
                 let content = std::fs::read(&file)?;
                 let blob_oid = self.store.repo.write_blob(content)?;
-                let relative_path = file.strip_prefix(&home)?.to_str().with_context(|| {
-                    format!(
-                        "Failed to convert path '{}' to string",
-                        file.strip_prefix(&home).unwrap_or(&file).display()
-                    )
-                })?;
+                let relative_path = to_tree_path(file.strip_prefix(&topic_base)?);
                 our_tree_editor.upsert(
                     relative_path,
                     gix::objs::tree::EntryKind::Blob,
@@ -235,12 +253,12 @@ impl PorchettaEngine {
                     ui::bullet(&format!("applied {} change(s) to system", operations.len()));
                 }
 
-                Self::preflight_apply_operations(&home, &name, &operations)
+                Self::preflight_apply_operations(&topic_base, &name, &operations)
                     .with_context(|| {
                         format!("Pre-flight checks failed for topic '{name}'")
                     })?;
 
-                self.apply_operations(&home, &name, operations)
+                self.apply_operations(&topic_base, &name, operations)
                     .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
             }
 
@@ -623,14 +641,14 @@ impl PorchettaEngine {
     }
 
     fn preflight_apply_operations(
-        home: &Path,
+        topic_base: &Path,
         topic_name: &str,
         operations: &[ApplyOperation],
     ) -> Result<()> {
         for operation in operations {
             match operation {
                 ApplyOperation::Upsert { relative_path, .. } => {
-                    let abs_path = home.join(relative_path);
+                    let abs_path = topic_base.join(relative_path);
 
                     if abs_path.is_dir() {
                         bail!(
@@ -652,7 +670,7 @@ impl PorchettaEngine {
                     }
                 }
                 ApplyOperation::Delete { relative_path } => {
-                    let abs_path = home.join(relative_path);
+                    let abs_path = topic_base.join(relative_path);
                     if abs_path.is_dir() {
                         bail!(
                             "Topic '{}' cannot delete '{}' as a file because it is a directory",
@@ -669,7 +687,7 @@ impl PorchettaEngine {
 
     fn apply_operations(
         &self,
-        home: &Path,
+        topic_base: &Path,
         topic_name: &str,
         operations: Vec<ApplyOperation>,
     ) -> Result<()> {
@@ -679,7 +697,7 @@ impl PorchettaEngine {
                     relative_path,
                     blob_oid,
                 } => {
-                    let abs_path = home.join(&relative_path);
+                    let abs_path = topic_base.join(&relative_path);
 
                     if let Some(parent) = abs_path.parent() {
                         std::fs::create_dir_all(parent).with_context(|| {
@@ -706,7 +724,7 @@ impl PorchettaEngine {
                     })?;
                 }
                 ApplyOperation::Delete { relative_path } => {
-                    let abs_path = home.join(relative_path);
+                    let abs_path = topic_base.join(relative_path);
                     if abs_path.exists() {
                         std::fs::remove_file(&abs_path).with_context(|| {
                             format!(
@@ -727,6 +745,6 @@ impl PorchettaEngine {
         let relative_path = std::str::from_utf8(location.as_ref()).with_context(|| {
             format!("Diff path '{}' is not valid UTF-8", location.to_str_lossy())
         })?;
-        Ok(PathBuf::from(relative_path))
+        Ok(from_tree_path(relative_path))
     }
 }
