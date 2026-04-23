@@ -100,8 +100,8 @@ fn main() -> Result<()> {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store);
 
-            let editor =
-                std::env::var("EDITOR").context("EDITOR environment variable not set")?;
+            let editor = porchetta::util::get_editor()
+                .context("Failed to determine editor")?;
 
             engine
                 .edit_manifest(|content| -> Result<Vec<u8>> {

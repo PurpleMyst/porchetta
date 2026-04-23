@@ -509,7 +509,8 @@ impl PorchettaEngine {
             .write_all(&blob.data)
             .context("Failed to write merged content to temporary file for conflict")?;
 
-        let editor = std::env::var("EDITOR").context("EDITOR environment variable is not set")?;
+        let editor = crate::util::get_editor()
+            .context("Failed to determine editor for merge conflict resolution")?;
         let status = std::process::Command::new(editor)
             .arg(tempfile.path())
             .status()
