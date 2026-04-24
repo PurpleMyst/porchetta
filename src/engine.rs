@@ -300,7 +300,7 @@ impl PorchettaEngine {
         }
 
         let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
-        ui::bullet(&format!("{name} — {status}"));
+        ui::bullet(&format!("{name} — {}", ui::status(status)));
 
         if !dry_run {
             let topic_head = self

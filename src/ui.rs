@@ -37,3 +37,18 @@ pub fn manifest_block(content: &str) {
         println!("  {}", line.dimmed());
     }
 }
+
+/// Color a sync status string for display.
+#[must_use]
+pub fn status(text: &str) -> String {
+    match text {
+        "unchanged" => text.dimmed().to_string(),
+        "pushed" => text.blue().bold().to_string(),
+        "applied" => text.yellow().bold().to_string(),
+        "synced" => text.green().bold().to_string(),
+        "would push" => text.blue().to_string(),
+        "would apply" => text.yellow().to_string(),
+        "would sync" => text.green().to_string(),
+        _ => text.to_string(),
+    }
+}
