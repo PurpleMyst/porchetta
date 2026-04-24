@@ -94,24 +94,9 @@ fn test_apply_rewrite() {
         .unwrap();
     let new_tree_id = tree_editor.write().unwrap();
 
-    let signature = gix::actor::Signature {
-        name: "Test".into(),
-        email: "".into(),
-        time: gix::date::Time::now_utc(),
-    };
-    let new_commit = store
-        .write_object(gix::objs::Commit {
-            tree: new_tree_id.into(),
-            parents: [head].into(),
-            message: "Modified".into(),
-            author: signature.clone(),
-            committer: signature,
-            encoding: None,
-            extra_headers: vec![],
-        })
-        .unwrap()
-        .into();
-    store.update_topic_head("test", new_commit).unwrap();
+    store
+        .commit_topic_tree("test", "bogus", new_tree_id, "Modified")
+        .unwrap();
 
     // Sync again: remote change should be transformed by to_system.
     let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);

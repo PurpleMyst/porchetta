@@ -223,7 +223,6 @@ impl PorchettaEngine {
                     ui::bullet(&format!("commited to repo ({commit_oid})"));
                 }
                 debug!("Created commit: {commit_oid}");
-                self.store.update_topic_head(name, commit_oid)?;
                 refs_to_push.push(format!("refs/heads/topic/{name}"));
             }
         } else {

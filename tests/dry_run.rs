@@ -50,24 +50,9 @@ fn test_sync_dry_run_does_not_create_commits() {
         .unwrap();
     let new_tree_id = tree_editor.write().unwrap();
 
-    let signature = gix::actor::Signature {
-        name: "Test".into(),
-        email: "".into(),
-        time: gix::date::Time::now_utc(),
-    };
     let new_commit = store
-        .write_object(gix::objs::Commit {
-            tree: new_tree_id.into(),
-            parents: [head].into(),
-            message: "Modified".into(),
-            author: signature.clone(),
-            committer: signature,
-            encoding: None,
-            extra_headers: vec![],
-        })
-        .unwrap()
-        .into();
-    store.update_topic_head("test", new_commit).unwrap();
+        .commit_topic_tree("test", "bogus", new_tree_id, "Modified")
+        .unwrap();
 
     // File on disk should still be "original".
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();

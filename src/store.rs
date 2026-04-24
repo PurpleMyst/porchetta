@@ -312,17 +312,6 @@ impl PorchettaStore {
         Ok(())
     }
 
-    /// Updates the head commit for a topic.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the topic branch cannot be updated.
-    pub fn update_topic_head(&self, topic: &str, new_head: gix::ObjectId) -> Result<()> {
-        let branch_name = format!("topic/{topic}");
-        debug!("Updating topic head for '{topic}' to {new_head}");
-        self.update_branch_head(&branch_name, new_head)
-    }
-
     /// Updates the head commit for a topic on the current hostname.
     ///
     /// # Errors
@@ -540,6 +529,10 @@ impl PorchettaStore {
             encoding: None,
             extra_headers: vec![],
         };
-        Ok(self.write_object(commit)?.into())
+        let commit_oid: gix::ObjectId = self.write_object(commit)?.into();
+        let branch_name = format!("topic/{topic}");
+        debug!("Updating topic head for '{topic}' to {commit_oid}");
+        self.update_branch_head(&branch_name, commit_oid)?;
+        Ok(commit_oid)
     }
 }
