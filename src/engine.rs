@@ -78,19 +78,13 @@ impl PorchettaEngine {
     /// git operation, or conflict resolution fails.
     pub fn sync(&mut self, verbose: bool, dry_run: bool, offline: bool) -> Result<()> {
         debug!("Starting sync operation");
-        let home = self.home.clone();
 
         let has_origin = !offline && self.store.has_origin()?;
 
         if has_origin {
             self.store.git_fetch()?;
             if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
-                use crate::store::FastForwardOutcome;
-                if self.store.fast_forward_branch("manifest", remote_oid)?
-                    == FastForwardOutcome::Diverged
-                {
-                    bail!("manifest branch has diverged between local and remote");
-                }
+                self.store.fast_forward_branch("manifest", remote_oid)?;
             }
         }
 
@@ -106,7 +100,7 @@ impl PorchettaEngine {
         let mut refs_to_push: Vec<String> = Vec::new();
         for (name, info) in &manifest.topics {
             refs_to_push.extend(self.sync_topic(
-                name, info, &home, &hostname, &manifest.lua, dry_run, verbose, has_origin,
+                name, info, &hostname, &manifest.lua, dry_run, verbose, has_origin,
             )?);
         }
 
@@ -126,7 +120,6 @@ impl PorchettaEngine {
         &mut self,
         name: &str,
         info: &crate::manifest::Topic,
-        home: &Utf8Path,
         hostname: &str,
         lua: &mlua::Lua,
         dry_run: bool,
@@ -136,9 +129,10 @@ impl PorchettaEngine {
         debug!("Syncing topic '{name}'");
         let mut refs_to_push = Vec::new();
 
-        let topic_base = match &info.root {
-            Some(root) if !root.as_str().is_empty() => home.join(root),
-            _ => home.to_path_buf(),
+        let topic_base = if let Some(root) = &info.root && !root.as_str().is_empty() {
+            self.home.join(root)
+        } else {
+            self.home.clone()
         };
 
         for p in &info.paths {
@@ -197,14 +191,9 @@ impl PorchettaEngine {
                 ),
                 other: Some(gix::bstr::BString::from(format!("{name} (in repo)")).as_bstr()),
             },
-            self.store.tree_merge_options()?,
         )?;
 
-        let has_unresolved = merge_outcome.conflicts.iter().any(|c| {
-            c.is_unresolved(TreatAsUnresolved::default())
-        });
-
-        if dry_run && has_unresolved {
+        if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
             ui::bullet(&format!("{name} — would require conflict resolution"));
             for conflict in &merge_outcome.conflicts {
                 if !conflict.is_unresolved(TreatAsUnresolved::default()) {
@@ -225,13 +214,11 @@ impl PorchettaEngine {
         let merged_tree_oid = merge_outcome.tree.write()?;
         trace!("Merged tree: {merged_tree_oid}");
 
-        let pushed = merged_tree_oid != their_tree_oid;
-        let pulled = merged_tree_oid != our_tree_oid;
-        let old_topic_head = self.store.get_topic_head(name)?;
-
-        if pushed {
+        let changed_wrt_repo = merged_tree_oid != their_tree_oid;
+        let changed_wrt_system = merged_tree_oid != our_tree_oid;
+        if changed_wrt_repo {
             if dry_run {
-                ui::bullet(&format!("would push topic '{name}' to repo"));
+                ui::bullet(&format!("would make changes to repo (new tree {merged_tree_oid})"));
             } else {
                 let commit_oid = self.store.commit_topic_tree(
                     name,
@@ -240,19 +227,17 @@ impl PorchettaEngine {
                     format!("Sync topic '{name}'"),
                 )?;
                 if verbose {
-                    ui::bullet(&format!("pushed to repo ({commit_oid})"));
+                    ui::bullet(&format!("commited to repo ({commit_oid})"));
                 }
                 debug!("Created commit: {commit_oid}");
                 self.store.update_topic_head(name, commit_oid)?;
-                if old_topic_head != Some(commit_oid) {
-                    refs_to_push.push(format!("refs/heads/topic/{name}"));
-                }
+                refs_to_push.push(format!("refs/heads/topic/{name}"));
             }
         } else {
             debug!("Topic '{name}' has no changes from repo");
         }
 
-        if pulled {
+        if changed_wrt_system {
             let our_tree = self.store.find_tree(our_tree_oid)?;
             let merged_tree = self.store.find_tree(merged_tree_oid)?;
             let operations = self::diff::collect_apply_operations(&our_tree, &merged_tree)
@@ -274,12 +259,7 @@ impl PorchettaEngine {
                     }
                 }
             } else {
-                if verbose {
-                    ui::bullet(&format!(
-                        "applied {} change(s) to system",
-                        operations.len()
-                    ));
-                }
+                let len = operations.len();
 
                 self::apply::preflight(&topic_base, name, &operations)
                     .with_context(|| format!("Pre-flight checks failed for topic '{name}'"))?;
@@ -297,10 +277,18 @@ impl PorchettaEngine {
                     |oid| self.store.find_blob(oid).map(|b| b.data.clone()),
                 )
                 .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
+
+                if verbose {
+                    ui::bullet(&format!(
+                        "applied {} change(s) to system",
+                        len
+                    ));
+                }
+
             }
         }
 
-        let status = Self::topic_sync_status(dry_run, pushed, pulled);
+        let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
         ui::bullet(&format!("{name} — {status}"));
 
         if !dry_run {
@@ -331,12 +319,6 @@ impl PorchettaEngine {
     }
 
     fn maybe_fast_forward_topic(&self, name: &str, remote_oid: gix::ObjectId) -> Result<()> {
-        use crate::store::FastForwardOutcome;
-        match self.store.fast_forward_branch(&format!("topic/{name}"), remote_oid)? {
-            FastForwardOutcome::Diverged => {
-                bail!("topic '{name}' has diverged between local and remote");
-            }
-            _ => Ok(()),
-        }
+        self.store.fast_forward_branch(&format!("topic/{name}"), remote_oid)
     }
 }

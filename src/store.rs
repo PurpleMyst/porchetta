@@ -9,17 +9,6 @@ pub struct PorchettaStore {
     repo: gix::Repository,
 }
 
-/// Outcome of attempting to fast-forward a branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FastForwardOutcome {
-    /// Local and remote are already in sync.
-    UpToDate,
-    /// Local was fast-forwarded to remote.
-    FastForwarded,
-    /// Local and remote have diverged.
-    Diverged,
-}
-
 impl PorchettaStore {
     /// Returns the standard Porchetta commit signature.
     #[must_use]
@@ -39,10 +28,7 @@ impl PorchettaStore {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub fn edit_tree(
-        &self,
-        id: impl Into<gix::ObjectId>,
-    ) -> Result<gix::object::tree::Editor<'_>> {
+    pub fn edit_tree(&self, id: impl Into<gix::ObjectId>) -> Result<gix::object::tree::Editor<'_>> {
         Ok(self.repo.edit_tree(id)?)
     }
 
@@ -73,22 +59,16 @@ impl PorchettaStore {
         ours: impl AsRef<gix::oid>,
         theirs: impl AsRef<gix::oid>,
         labels: gix::merge::blob::builtin_driver::text::Labels,
-        options: gix::merge::tree::Options,
     ) -> Result<gix::merge::tree::Outcome<'_>> {
-        Ok(self.repo.merge_trees(base, ours, theirs, labels, options)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn tree_merge_options(&self) -> Result<gix::merge::tree::Options> {
-        Ok(self.repo.tree_merge_options()?)
+        Ok(self
+            .repo
+            .merge_trees(base, ours, theirs, labels, self.repo.tree_merge_options()?)?)
     }
 
     #[allow(clippy::missing_errors_doc)]
     pub fn write_object(&self, object: impl gix::objs::WriteTo) -> Result<gix::Id<'_>> {
         Ok(self.repo.write_object(object)?)
     }
-
-    // --
 
     /// Initializes a new Porchetta store.
     ///
@@ -272,31 +252,29 @@ impl PorchettaStore {
     /// # Errors
     ///
     /// Returns an error if reading or updating the branch fails.
-    pub fn fast_forward_branch(
-        &self,
-        branch: &str,
-        remote_oid: gix::ObjectId,
-    ) -> Result<FastForwardOutcome> {
+    pub fn fast_forward_branch(&self, branch: &str, remote_oid: gix::ObjectId) -> Result<()> {
         let Some(local_oid) = self.get_branch_head(branch)? else {
             self.update_branch_head(branch, remote_oid)?;
-            return Ok(FastForwardOutcome::FastForwarded);
+            return Ok(());
         };
 
         if remote_oid == local_oid {
-            return Ok(FastForwardOutcome::UpToDate);
+            return Ok(());
         }
 
         if self.git_ancestor_check(remote_oid, local_oid)? {
             // remote is ancestor of local, local is ahead
-            return Ok(FastForwardOutcome::UpToDate);
+            return Ok(());
         }
 
         if self.git_ancestor_check(local_oid, remote_oid)? {
             self.update_branch_head(branch, remote_oid)?;
-            return Ok(FastForwardOutcome::FastForwarded);
+            return Ok(());
         }
 
-        Ok(FastForwardOutcome::Diverged)
+        bail!(
+            "Cannot fast-forward branch '{branch}' from {local_oid} to {remote_oid} because they have diverged"
+        );
     }
 
     /// Gets the head commit for a topic.
@@ -357,9 +335,7 @@ impl PorchettaStore {
         new_head: gix::ObjectId,
     ) -> Result<()> {
         let branch_name = format!("system/{hostname}/{topic}");
-        debug!(
-            "Updating topic hostname head for '{hostname}/{topic}' to {new_head}"
-        );
+        debug!("Updating topic hostname head for '{hostname}/{topic}' to {new_head}");
         self.update_branch_head(&branch_name, new_head)
     }
 
@@ -387,7 +363,11 @@ impl PorchettaStore {
     ///
     /// Returns an error if the repository configuration cannot be read.
     pub fn has_origin(&self) -> Result<bool> {
-        Ok(self.repo.config_snapshot().string("remote.origin.url").is_some())
+        Ok(self
+            .repo
+            .config_snapshot()
+            .string("remote.origin.url")
+            .is_some())
     }
 
     /// Runs `git fetch origin` in the store repository.
@@ -404,11 +384,7 @@ impl PorchettaStore {
     pub fn git_fetch(&self) -> Result<()> {
         let status = std::process::Command::new("git")
             .current_dir(self.repo.path())
-            .args([
-                "fetch",
-                "origin",
-                "+refs/heads/*:refs/remotes/origin/*",
-            ])
+            .args(["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"])
             .status()
             .context("Failed to run git fetch")?;
         if !status.success() {
