@@ -104,11 +104,26 @@ impl PorchettaEngine {
             )?);
         }
 
-        if !dry_run && has_origin && !refs_to_push.is_empty() {
-            if verbose {
-                ui::info(&format!("Pushing {} ref(s) to origin", refs_to_push.len()));
+        if !dry_run && has_origin {
+            if let Some(local_manifest) = self.store.get_manifest_head()? {
+                let push_manifest = match self.store.get_remote_manifest_head("origin")? {
+                    Some(remote_manifest) => {
+                        local_manifest != remote_manifest
+                            && self.store.git_ancestor_check(remote_manifest, local_manifest)?
+                    }
+                    None => true,
+                };
+                if push_manifest {
+                    refs_to_push.push("refs/heads/manifest".to_string());
+                }
             }
-            self.store.git_push(&refs_to_push)?;
+
+            if !refs_to_push.is_empty() {
+                if verbose {
+                    ui::info(&format!("Pushing {} ref(s) to origin", refs_to_push.len()));
+                }
+                self.store.git_push(&refs_to_push)?;
+            }
         }
 
         debug!("Sync operation completed");
