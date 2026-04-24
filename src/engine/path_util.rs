@@ -20,8 +20,7 @@ pub fn from_tree_path(path: &str) -> Utf8PathBuf {
 ///
 /// Returns an error if the location is not valid UTF-8.
 pub fn diff_location_to_path(location: &gix::bstr::BStr) -> Result<Utf8PathBuf> {
-    let relative_path = std::str::from_utf8(location.as_ref()).with_context(|| {
-        format!("Diff path '{}' is not valid UTF-8", location.to_str_lossy())
-    })?;
+    let relative_path = std::str::from_utf8(location.as_ref())
+        .with_context(|| format!("Diff path '{}' is not valid UTF-8", location.to_str_lossy()))?;
     Ok(from_tree_path(relative_path))
 }

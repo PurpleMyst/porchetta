@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gix::ObjectId;
 
-use crate::store::PorchettaStore;
 use super::path_util::to_tree_path;
+use crate::store::PorchettaStore;
 
 /// Read files from disk, apply the `to_repo` transform, and write them into a new git tree.
 ///
@@ -20,15 +20,11 @@ pub fn snapshot_topic(
 
     for file in files {
         let relative_path = to_tree_path(file.strip_prefix(topic_base)?);
-        let content = std::fs::read(file)
-            .with_context(|| format!("Failed to read file '{file}'"))?;
+        let content =
+            std::fs::read(file).with_context(|| format!("Failed to read file '{file}'"))?;
         let content = to_repo(&relative_path, &content)?;
         let blob_oid = store.write_blob(&content)?;
-        editor.upsert(
-            &relative_path,
-            gix::objs::tree::EntryKind::Blob,
-            blob_oid,
-        )?;
+        editor.upsert(&relative_path, gix::objs::tree::EntryKind::Blob, blob_oid)?;
     }
 
     Ok(editor.write()?.into())

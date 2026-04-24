@@ -125,7 +125,10 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     let mut empty = false;
     let mut executable = false;
 
-    if matches!(kind, FileKind::Regular | FileKind::Create | FileKind::Modify) {
+    if matches!(
+        kind,
+        FileKind::Regular | FileKind::Create | FileKind::Modify
+    ) {
         loop {
             let before = name;
             let (found, rest) = strip_prefix(name, "encrypted_");
@@ -310,13 +313,16 @@ fn walk_source_dir(
     warnings: &mut Warnings,
 ) -> Result<()> {
     let abs_dir = source_root.join(rel_dir);
-    let dir_reader = std::fs::read_dir(&abs_dir)
-        .with_context(|| format!("failed to read dir {abs_dir}"))?;
+    let dir_reader =
+        std::fs::read_dir(&abs_dir).with_context(|| format!("failed to read dir {abs_dir}"))?;
 
     for entry in dir_reader {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|os| {
-            anyhow::anyhow!("non-UTF-8 file name '{}' in {abs_dir}", os.to_string_lossy())
+            anyhow::anyhow!(
+                "non-UTF-8 file name '{}' in {abs_dir}",
+                os.to_string_lossy()
+            )
         })?;
         let file_type = entry.file_type()?;
 
@@ -451,7 +457,10 @@ impl Warnings {
             parts.push(format!("{} modify script(s) skipped", self.modifies));
         }
         if self.creates > 0 {
-            parts.push(format!("{} create-only file(s) (semantics lost)", self.creates));
+            parts.push(format!(
+                "{} create-only file(s) (semantics lost)",
+                self.creates
+            ));
         }
         if self.templates > 0 {
             parts.push(format!("{} template(s) detected", self.templates));
@@ -508,7 +517,10 @@ fn compute_manifest_paths(
                 let entry = entry?;
                 count += 1;
                 let entry_name = entry.file_name().into_string().map_err(|os| {
-                    anyhow::anyhow!("non-UTF-8 file name '{}' in {abs_dir}", os.to_string_lossy())
+                    anyhow::anyhow!(
+                        "non-UTF-8 file name '{}' in {abs_dir}",
+                        os.to_string_lossy()
+                    )
                 })?;
                 let entry_rel = dir.join(&entry_name);
 
@@ -560,10 +572,7 @@ fn compute_manifest_paths(
 }
 
 fn topic_name_for_path(path: &Utf8Path) -> String {
-    let components: Vec<String> = path
-        .components()
-        .map(|c| c.as_str().to_owned())
-        .collect();
+    let components: Vec<String> = path.components().map(|c| c.as_str().to_owned()).collect();
     let n = components.len();
 
     if n == 1 {
@@ -693,8 +702,10 @@ fn group_into_topics(
     let manifest_paths = compute_manifest_paths(&managed_files, home)?;
 
     // Remap AppData paths to .config for cross-platform manifest output.
-    let manifest_paths: Vec<Utf8PathBuf> =
-        manifest_paths.iter().map(|p| remap_target_path(p)).collect();
+    let manifest_paths: Vec<Utf8PathBuf> = manifest_paths
+        .iter()
+        .map(|p| remap_target_path(p))
+        .collect();
 
     let remapped_managed: HashSet<Utf8PathBuf> =
         managed_files.iter().map(|p| remap_target_path(p)).collect();
@@ -758,7 +769,11 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
         writeln!(&mut buf, "        {} = {{", escape_lua_string(topic))?;
         if let Some(root) = root {
             let r = root.as_str().replace('\\', "/");
-            writeln!(&mut buf, "            root = \"{}\",", escape_lua_string(&r))?;
+            writeln!(
+                &mut buf,
+                "            root = \"{}\",",
+                escape_lua_string(&r)
+            )?;
         }
         buf.push_str("            paths = {");
         for (i, p) in paths.iter().enumerate() {
@@ -781,8 +796,8 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
     let bytes = buf.into_bytes();
 
     // Validate by round-tripping through Manifest::load
-    let _manifest = Manifest::load(&bytes)
-        .context("generated manifest failed validation — this is a bug")?;
+    let _manifest =
+        Manifest::load(&bytes).context("generated manifest failed validation — this is a bug")?;
 
     Ok(bytes)
 }
@@ -798,11 +813,7 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
 ///
 /// Returns an error if the source directory cannot be read, if parsing fails,
 /// or if writing the manifest to the store fails.
-pub fn migrate(
-    store: &PorchettaStore,
-    source_dir: &Utf8Path,
-    yes: bool,
-) -> Result<()> {
+pub fn migrate(store: &PorchettaStore, source_dir: &Utf8Path, yes: bool) -> Result<()> {
     info!("Migrating chezmoi source directory: {source_dir}");
 
     if !source_dir.is_dir() {
@@ -812,14 +823,20 @@ pub fn migrate(
     let mut entries = Vec::new();
     let mut warnings = Warnings::default();
 
-    walk_source_dir(source_dir, Utf8Path::new(""), Utf8Path::new(""), &mut entries, &mut warnings)?;
+    walk_source_dir(
+        source_dir,
+        Utf8Path::new(""),
+        Utf8Path::new(""),
+        &mut entries,
+        &mut warnings,
+    )?;
 
     let entry_count = entries.len();
     debug!("Resolved {entry_count} target entries from chezmoi source");
 
-    let home = Utf8PathBuf::try_from(
-        dirs::home_dir().context("Could not determine home directory")?
-    ).map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+    let home =
+        Utf8PathBuf::try_from(dirs::home_dir().context("Could not determine home directory")?)
+            .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
     let topics = group_into_topics(entries, home.as_path())?;
     let topic_count = topics.len();
     let path_count: usize = topics.values().map(|(_, paths)| paths.len()).sum();
@@ -839,15 +856,17 @@ pub fn migrate(
 
     for topic in &topic_names {
         let (root, paths) = &topics[*topic];
-        let path_list: Vec<String> = paths
-            .iter()
-            .map(|p| p.as_str().to_string())
-            .collect();
+        let path_list: Vec<String> = paths.iter().map(|p| p.as_str().to_string()).collect();
         let root_display = root
             .as_ref()
-            .map(|r| format!(" [{}]", {r}))
+            .map(|r| format!(" [{}]", { r }))
             .unwrap_or_default();
-        ui::bullet(&format!("{}{}  ({})", topic, root_display, path_list.join(", ")));
+        ui::bullet(&format!(
+            "{}{}  ({})",
+            topic,
+            root_display,
+            path_list.join(", ")
+        ));
     }
 
     if warnings.has_any() {
@@ -948,8 +967,10 @@ mod tests {
         std::fs::write(home.join("a/b/d.txt"), "").unwrap();
         std::fs::write(home.join("a/x.txt"), "").unwrap(); // unmanaged sibling
 
-        let managed: HashSet<Utf8PathBuf> =
-            ["a/b/c.txt", "a/b/d.txt"].iter().map(Utf8PathBuf::from).collect();
+        let managed: HashSet<Utf8PathBuf> = ["a/b/c.txt", "a/b/d.txt"]
+            .iter()
+            .map(Utf8PathBuf::from)
+            .collect();
         let paths = compute_manifest_paths(&managed, home).unwrap();
         assert_eq!(paths, vec![Utf8PathBuf::from("a/b")]);
     }
@@ -1168,13 +1189,19 @@ mod tests {
         let mut topics = HashMap::new();
         topics.insert(
             "shell".to_string(),
-            (None, vec![Utf8PathBuf::from(".bashrc"), Utf8PathBuf::from(".zshrc")]),
+            (
+                None,
+                vec![Utf8PathBuf::from(".bashrc"), Utf8PathBuf::from(".zshrc")],
+            ),
         );
         topics.insert(
             "nvim".to_string(),
             (
                 Some(Utf8PathBuf::from(".config/nvim")),
-                vec![Utf8PathBuf::from("init.lua"), Utf8PathBuf::from("lua/plugins.lua")],
+                vec![
+                    Utf8PathBuf::from("init.lua"),
+                    Utf8PathBuf::from("lua/plugins.lua"),
+                ],
             ),
         );
 

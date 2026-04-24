@@ -48,11 +48,12 @@ impl Topic {
             .lua
             .create_string(content)
             .with_context(|| format!("Failed to create content string for {hook_name}"))?;
-        let result: Value = func
-            .call((path_arg, content_arg))
-            .with_context(|| {
-                format!("{hook_name} hook for topic '{}' on '{path}' failed", self.name)
-            })?;
+        let result: Value = func.call((path_arg, content_arg)).with_context(|| {
+            format!(
+                "{hook_name} hook for topic '{}' on '{path}' failed",
+                self.name
+            )
+        })?;
         match result {
             Value::String(s) => Ok(s.as_bytes().to_vec()),
             other => bail!(
@@ -95,15 +96,15 @@ impl Topic {
     pub fn should_include(&self, path: &str) -> Result<bool> {
         match &self.should_include {
             Some(func) => {
-                let path_arg = self
-                    .lua
-                    .create_string(path)
-                    .with_context(|| "Failed to create path string for should_include".to_string())?;
-                let result: Value = func
-                    .call(path_arg)
-                    .with_context(|| {
-                        format!("should_include hook for topic '{}' on '{path}' failed", self.name)
-                    })?;
+                let path_arg = self.lua.create_string(path).with_context(|| {
+                    "Failed to create path string for should_include".to_string()
+                })?;
+                let result: Value = func.call(path_arg).with_context(|| {
+                    format!(
+                        "should_include hook for topic '{}' on '{path}' failed",
+                        self.name
+                    )
+                })?;
                 match result {
                     Value::Boolean(b) => Ok(b),
                     other => bail!(
@@ -133,7 +134,9 @@ impl Manifest {
         for (name, topic) in manifest_value
             .as_table()
             .ok_or_else(|| anyhow::anyhow!("Manifest must be a table"))?
-            .get::<std::collections::HashMap<String, std::collections::HashMap<String, Value>>>("topics")?
+            .get::<std::collections::HashMap<String, std::collections::HashMap<String, Value>>>(
+                "topics",
+            )?
         {
             trace!("Loading topic '{name}'");
             let paths: Vec<String> = topic
@@ -147,13 +150,14 @@ impl Manifest {
 
             trace!("Topic '{}' has {} paths", name, paths.len());
 
-            let root = topic
-                .get("root")
-                .and_then(|v| v.as_string())
-                .and_then(|s| {
-                    let s = s.to_string_lossy();
-                    if s.is_empty() { None } else { Some(Utf8PathBuf::from(s)) }
-                });
+            let root = topic.get("root").and_then(|v| v.as_string()).and_then(|s| {
+                let s = s.to_string_lossy();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(Utf8PathBuf::from(s))
+                }
+            });
 
             let to_repo = match topic.get("to_repo") {
                 Some(Value::Function(f)) => Some(f.clone()),

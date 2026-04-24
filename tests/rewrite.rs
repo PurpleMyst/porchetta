@@ -26,7 +26,11 @@ fn test_capture_rewrite() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "my SECRET value").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -72,7 +76,11 @@ fn test_apply_rewrite() {
     std::fs::write(topic_dir.join("config.txt"), "initial").unwrap();
 
     // First sync: capture initial state and push it.
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     // Manually create a new commit on the topic branch with repo-specific content.
@@ -99,7 +107,11 @@ fn test_apply_rewrite() {
         .unwrap();
 
     // Sync again: remote change should be transformed by to_system.
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let system_content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
@@ -133,14 +145,22 @@ fn test_rewrite_idempotence() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "hello SYSTEM").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head_after_first = store.get_topic_head("test").unwrap().unwrap();
 
     // Sync a second time with identical system state.
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();

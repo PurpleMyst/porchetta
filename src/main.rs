@@ -36,10 +36,7 @@ impl ConflictResolver for InteractiveResolver {
     ) -> anyhow::Result<gix::objs::tree::EntryKind> {
         let choice = inquire::Select::new(
             "Local and remote entries have different kinds. Which should be used?",
-            vec![
-                format!("Local ({ours:?})"),
-                format!("Remote ({theirs:?})"),
-            ],
+            vec![format!("Local ({ours:?})"), format!("Remote ({theirs:?})")],
         )
         .prompt()
         .context("User canceled entry kind selection")?;
@@ -60,8 +57,7 @@ impl ConflictResolver for InteractiveResolver {
         std::io::Write::write_all(&mut temp_file, content)
             .context("Failed to write conflict content to temp file")?;
 
-        let editor = porchetta::util::get_editor()
-            .context("Failed to determine editor")?;
+        let editor = porchetta::util::get_editor().context("Failed to determine editor")?;
         let status = std::process::Command::new(&editor)
             .arg(temp_file.path())
             .status()
@@ -75,7 +71,10 @@ impl ConflictResolver for InteractiveResolver {
 }
 
 #[derive(Parser)]
-#[command(name = "porchetta", about = "Dotfile manager with topics and conflict resolution")]
+#[command(
+    name = "porchetta",
+    about = "Dotfile manager with topics and conflict resolution"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -165,7 +164,8 @@ fn main() -> Result<()> {
             ui::manifest_block(&String::from_utf8_lossy(&manifest_bytes));
 
             if cli.verbose {
-                let manifest = Manifest::load(&manifest_bytes).context("Failed to parse manifest")?;
+                let manifest =
+                    Manifest::load(&manifest_bytes).context("Failed to parse manifest")?;
                 ui::info(&format!("{} topics", manifest.topics.len()));
                 for topic in &manifest.topics {
                     ui::bullet(&format!("{} ({} paths)", topic.name, topic.paths.len()));
@@ -180,8 +180,7 @@ fn main() -> Result<()> {
             let mut engine = PorchettaEngine::new(store, InteractiveResolver)
                 .context("Failed to create engine")?;
 
-            let editor = porchetta::util::get_editor()
-                .context("Failed to determine editor")?;
+            let editor = porchetta::util::get_editor().context("Failed to determine editor")?;
 
             engine
                 .edit_manifest(|content| -> Result<Vec<u8>> {
@@ -213,7 +212,9 @@ fn main() -> Result<()> {
             } else {
                 ui::header("Syncing topics");
             }
-            engine.sync(cli.verbose, dry_run, offline).context("Failed to sync")?;
+            engine
+                .sync(cli.verbose, dry_run, offline)
+                .context("Failed to sync")?;
             if dry_run {
                 ui::success("Dry run complete");
             } else {
@@ -221,7 +222,8 @@ fn main() -> Result<()> {
             }
         }
         Command::Clone { url } => {
-            let store_path = PorchettaStore::store_path().context("Failed to determine store path")?;
+            let store_path =
+                PorchettaStore::store_path().context("Failed to determine store path")?;
             if store_path.exists() {
                 anyhow::bail!(
                     "Porchetta store already exists at {store_path}\n\

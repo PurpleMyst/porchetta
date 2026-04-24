@@ -27,7 +27,11 @@ fn test_should_include_filters_files() {
     std::fs::write(topic_dir.join("config.txt"), "hello").unwrap();
     std::fs::write(topic_dir.join("debug.log"), "log data").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -76,7 +80,11 @@ fn test_should_include_filters_directory_recursion() {
     std::fs::create_dir_all(topic_dir.join("cache")).unwrap();
     std::fs::write(topic_dir.join("cache").join("file.txt"), "cached").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();

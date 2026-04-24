@@ -3,8 +3,8 @@ use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use log::{debug, warn};
 
-use crate::store::PorchettaStore;
 use super::resolver::ConflictResolver;
+use crate::store::PorchettaStore;
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.
 ///
@@ -119,7 +119,9 @@ fn tree_conflict_prompt(
     );
 
     if conflict.content_merge().is_some() {
-        prompt.push_str("\n\nA merged blob exists, but this conflict still needs a structural decision.");
+        prompt.push_str(
+            "\n\nA merged blob exists, but this conflict still needs a structural decision.",
+        );
     }
 
     prompt.push_str("\n\nChoose which side to keep:");
@@ -147,11 +149,27 @@ pub fn conflict_location_description(
 
 fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
     match change {
-        gix::diff::tree_with_rewrites::Change::Addition { location, entry_mode, .. } => {
-            format!("add {:?} at '{}'", entry_mode.kind(), location.to_str_lossy())
+        gix::diff::tree_with_rewrites::Change::Addition {
+            location,
+            entry_mode,
+            ..
+        } => {
+            format!(
+                "add {:?} at '{}'",
+                entry_mode.kind(),
+                location.to_str_lossy()
+            )
         }
-        gix::diff::tree_with_rewrites::Change::Deletion { location, entry_mode, .. } => {
-            format!("delete {:?} at '{}'", entry_mode.kind(), location.to_str_lossy())
+        gix::diff::tree_with_rewrites::Change::Deletion {
+            location,
+            entry_mode,
+            ..
+        } => {
+            format!(
+                "delete {:?} at '{}'",
+                entry_mode.kind(),
+                location.to_str_lossy()
+            )
         }
         gix::diff::tree_with_rewrites::Change::Modification {
             location,
@@ -210,8 +228,7 @@ fn entry_kind_for_shared_location(
         return Ok(ours_kind);
     }
 
-    let prompt =
-        "Local and remote entries have different kinds. Which should be used?";
+    let prompt = "Local and remote entries have different kinds. Which should be used?";
     resolver.choose_entry_kind(prompt, ours_kind, theirs_kind)
 }
 

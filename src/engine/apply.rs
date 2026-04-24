@@ -79,25 +79,19 @@ pub fn apply(
                 }
 
                 let content = read_blob(blob_oid).with_context(|| {
-                    format!(
-                        "Failed to read blob '{blob_oid}' for topic '{topic_name}'"
-                    )
+                    format!("Failed to read blob '{blob_oid}' for topic '{topic_name}'")
                 })?;
 
                 let content = to_system(relative_path.as_str(), &content)?;
                 std::fs::write(&abs_path, content).with_context(|| {
-                    format!(
-                        "Failed to write '{abs_path}' for topic '{topic_name}'"
-                    )
+                    format!("Failed to write '{abs_path}' for topic '{topic_name}'")
                 })?;
             }
             ApplyOperation::Delete { relative_path } => {
                 let abs_path = topic_base.join(relative_path);
                 if abs_path.exists() {
                     std::fs::remove_file(&abs_path).with_context(|| {
-                        format!(
-                            "Failed to delete '{abs_path}' for topic '{topic_name}'"
-                        )
+                        format!("Failed to delete '{abs_path}' for topic '{topic_name}'")
                     })?;
                 }
             }

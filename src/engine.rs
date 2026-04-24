@@ -31,10 +31,9 @@ impl PorchettaEngine {
     ///
     /// Returns an error if the home directory cannot be determined or is not valid UTF-8.
     pub fn new(store: PorchettaStore, resolver: impl ConflictResolver + 'static) -> Result<Self> {
-        let home = Utf8PathBuf::try_from(
-            dirs::home_dir().context("Could not determine home directory")?,
-        )
-        .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+        let home =
+            Utf8PathBuf::try_from(dirs::home_dir().context("Could not determine home directory")?)
+                .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
         Ok(Self {
             store,
             home,
@@ -99,9 +98,7 @@ impl PorchettaEngine {
 
         let mut refs_to_push: Vec<String> = Vec::new();
         for info in &manifest.topics {
-            refs_to_push.extend(self.sync_topic(
-                info, &hostname, dry_run, verbose, has_origin,
-            )?);
+            refs_to_push.extend(self.sync_topic(info, &hostname, dry_run, verbose, has_origin)?);
         }
 
         if !dry_run && has_origin {
@@ -109,7 +106,9 @@ impl PorchettaEngine {
                 let push_manifest = match self.store.get_remote_manifest_head("origin")? {
                     Some(remote_manifest) => {
                         local_manifest != remote_manifest
-                            && self.store.git_ancestor_check(remote_manifest, local_manifest)?
+                            && self
+                                .store
+                                .git_ancestor_check(remote_manifest, local_manifest)?
                     }
                     None => true,
                 };
@@ -143,7 +142,9 @@ impl PorchettaEngine {
         debug!("Syncing topic '{name}'");
         let mut refs_to_push = Vec::new();
 
-        let topic_base = if let Some(root) = &info.root && !root.as_str().is_empty() {
+        let topic_base = if let Some(root) = &info.root
+            && !root.as_str().is_empty()
+        {
             self.home.join(root)
         } else {
             self.home.clone()
@@ -156,15 +157,12 @@ impl PorchettaEngine {
             );
         }
 
-        if has_origin
-            && let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)?
-        {
+        if has_origin && let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)? {
             self.maybe_fast_forward_topic(name, remote_oid)?;
         }
 
-        let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
-            info.should_include(rel)
-        })?;
+        let topic_files =
+            self::scan::scan_topic_files(&topic_base, &info.paths, |rel| info.should_include(rel))?;
 
         let file_count = topic_files.len();
         debug!("Topic '{name}' has {file_count} files to sync");
@@ -196,9 +194,7 @@ impl PorchettaEngine {
                 ancestor: Some(
                     gix::bstr::BString::from(format!("{name} (last applied)")).as_bstr(),
                 ),
-                current: Some(
-                    gix::bstr::BString::from(format!("{name} (on system)")).as_bstr(),
-                ),
+                current: Some(gix::bstr::BString::from(format!("{name} (on system)")).as_bstr()),
                 other: Some(gix::bstr::BString::from(format!("{name} (in repo)")).as_bstr()),
             },
         )?;
@@ -218,7 +214,11 @@ impl PorchettaEngine {
         }
 
         if !dry_run {
-            self::merge::resolve_conflicts(&self.store, self.resolver.as_ref(), &mut merge_outcome)?;
+            self::merge::resolve_conflicts(
+                &self.store,
+                self.resolver.as_ref(),
+                &mut merge_outcome,
+            )?;
         }
 
         let merged_tree_oid = merge_outcome.tree.write()?;
@@ -228,7 +228,9 @@ impl PorchettaEngine {
         let changed_wrt_system = merged_tree_oid != our_tree_oid;
         if changed_wrt_repo {
             if dry_run {
-                ui::bullet(&format!("would make changes to repo (new tree {merged_tree_oid})"));
+                ui::bullet(&format!(
+                    "would make changes to repo (new tree {merged_tree_oid})"
+                ));
             } else {
                 let commit_oid = self.store.commit_topic_tree(
                     name,
@@ -250,7 +252,9 @@ impl PorchettaEngine {
             let our_tree = self.store.find_tree(our_tree_oid)?;
             let merged_tree = self.store.find_tree(merged_tree_oid)?;
             let operations = self::diff::collect_apply_operations(&our_tree, &merged_tree)
-                .with_context(|| format!("Failed to compute apply operations for topic '{name}'"))?;
+                .with_context(|| {
+                    format!("Failed to compute apply operations for topic '{name}'")
+                })?;
 
             if dry_run {
                 ui::bullet(&format!(
@@ -283,12 +287,8 @@ impl PorchettaEngine {
                 .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
 
                 if verbose {
-                    ui::bullet(&format!(
-                        "applied {} change(s) to system",
-                        len
-                    ));
+                    ui::bullet(&format!("applied {} change(s) to system", len));
                 }
-
             }
         }
 
@@ -296,11 +296,13 @@ impl PorchettaEngine {
         ui::bullet(&format!("{name} — {status}"));
 
         if !dry_run {
-            let topic_head = self.store
+            let topic_head = self
+                .store
                 .get_topic_head(name)?
                 .context("Missing topic head for existing topic")?;
             let old_system_head = self.store.get_topic_hostname_head(name, hostname)?;
-            self.store.update_topic_hostname_head(name, hostname, topic_head)?;
+            self.store
+                .update_topic_hostname_head(name, hostname, topic_head)?;
             if old_system_head != Some(topic_head) {
                 refs_to_push.push(format!("refs/heads/system/{hostname}/{name}"));
             }
@@ -323,6 +325,7 @@ impl PorchettaEngine {
     }
 
     fn maybe_fast_forward_topic(&self, name: &str, remote_oid: gix::ObjectId) -> Result<()> {
-        self.store.fast_forward_branch(&format!("topic/{name}"), remote_oid)
+        self.store
+            .fast_forward_branch(&format!("topic/{name}"), remote_oid)
     }
 }

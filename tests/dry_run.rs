@@ -17,7 +17,11 @@ fn test_sync_dry_run_does_not_create_commits() {
     std::fs::write(topic_dir.join("config.txt"), "original").unwrap();
 
     // Dry run sync should not create a topic head.
-    let mut engine = porchetta::engine::PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = porchetta::engine::PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, true, true).unwrap();
 
     let store = porchetta::store::PorchettaStore::load_at(&store_path).unwrap();
@@ -27,7 +31,11 @@ fn test_sync_dry_run_does_not_create_commits() {
     );
 
     // Real sync should create a topic head.
-    let mut engine = porchetta::engine::PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = porchetta::engine::PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let store = porchetta::store::PorchettaStore::load_at(&store_path).unwrap();
@@ -59,7 +67,11 @@ fn test_sync_dry_run_does_not_create_commits() {
     assert_eq!(content, "original");
 
     // Dry run sync again — filesystem and refs must stay untouched.
-    let mut engine = porchetta::engine::PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = porchetta::engine::PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, true, true).unwrap();
 
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
@@ -73,7 +85,11 @@ fn test_sync_dry_run_does_not_create_commits() {
     );
 
     // Real sync should apply the pending change.
-    let mut engine = porchetta::engine::PorchettaEngine::with_home(store, home.clone(), porchetta::engine::resolver::PanickingResolver);
+    let mut engine = porchetta::engine::PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
     engine.sync(false, false, true).unwrap();
 
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
