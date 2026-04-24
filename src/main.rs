@@ -177,7 +177,8 @@ fn main() -> Result<()> {
         }
         Command::Edit => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store, InteractiveResolver);
+            let mut engine = PorchettaEngine::new(store, InteractiveResolver)
+                .context("Failed to create engine")?;
 
             let editor = porchetta::util::get_editor()
                 .context("Failed to determine editor")?;
@@ -205,7 +206,8 @@ fn main() -> Result<()> {
         }
         Command::Sync { dry_run, offline } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store, InteractiveResolver);
+            let mut engine = PorchettaEngine::new(store, InteractiveResolver)
+                .context("Failed to create engine")?;
             if dry_run {
                 ui::header("Syncing topics (dry run)");
             } else {

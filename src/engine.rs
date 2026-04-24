@@ -20,17 +20,26 @@ use crate::ui;
 
 pub struct PorchettaEngine {
     store: PorchettaStore,
-    home: Option<Utf8PathBuf>,
+    home: Utf8PathBuf,
     resolver: Box<dyn ConflictResolver>,
 }
 
 impl PorchettaEngine {
-    pub fn new(store: PorchettaStore, resolver: impl ConflictResolver + 'static) -> Self {
-        Self {
+    /// Creates an engine with the user's home directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined or is not valid UTF-8.
+    pub fn new(store: PorchettaStore, resolver: impl ConflictResolver + 'static) -> Result<Self> {
+        let home = Utf8PathBuf::try_from(
+            dirs::home_dir().context("Could not determine home directory")?,
+        )
+        .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+        Ok(Self {
             store,
-            home: None,
+            home,
             resolver: Box::new(resolver),
-        }
+        })
     }
 
     /// Creates an engine bound to a specific home directory (useful for tests).
@@ -41,7 +50,7 @@ impl PorchettaEngine {
     ) -> Self {
         Self {
             store,
-            home: Some(home),
+            home,
             resolver: Box::new(resolver),
         }
     }
@@ -69,7 +78,7 @@ impl PorchettaEngine {
     /// git operation, or conflict resolution fails.
     pub fn sync(&mut self, verbose: bool, dry_run: bool, offline: bool) -> Result<()> {
         debug!("Starting sync operation");
-        let home = self.resolve_home()?;
+        let home = self.home.clone();
         let mut manifest = Manifest::load(&self.store.read_manifest()?)?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
@@ -105,16 +114,6 @@ impl PorchettaEngine {
 
         debug!("Sync operation completed");
         Ok(())
-    }
-
-    fn resolve_home(&self) -> Result<Utf8PathBuf> {
-        match &self.home {
-            Some(h) => Ok(h.clone()),
-            None => Utf8PathBuf::try_from(
-                dirs::home_dir().context("Could not determine home directory")?,
-            )
-            .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}")),
-        }
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
