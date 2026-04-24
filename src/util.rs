@@ -24,10 +24,9 @@ pub fn get_editor() -> Result<String> {
 }
 
 fn is_in_path(program: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(program)
-        .output()
-        .is_ok_and(|output| output.status.success())
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    })
 }
 
 #[cfg(test)]

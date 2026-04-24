@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -317,8 +318,8 @@ fn walk_source_dir(
 
     for entry in dir_reader {
         let entry = entry?;
-        let name = entry.file_name().into_string().map_err(|_| {
-            anyhow::anyhow!("non-UTF-8 file name in {abs_dir}")
+        let name = entry.file_name().into_string().map_err(|os| {
+            anyhow::anyhow!("non-UTF-8 file name '{}' in {abs_dir}", os.to_string_lossy())
         })?;
         let file_type = entry.file_type()?;
 
@@ -509,8 +510,8 @@ fn compute_manifest_paths(
             {
                 let entry = entry?;
                 count += 1;
-                let entry_name = entry.file_name().into_string().map_err(|_| {
-                    anyhow::anyhow!("non-UTF-8 file name in {abs_dir}")
+                let entry_name = entry.file_name().into_string().map_err(|os| {
+                    anyhow::anyhow!("non-UTF-8 file name '{}' in {abs_dir}", os.to_string_lossy())
                 })?;
                 let entry_rel = dir.join(&entry_name);
 
@@ -727,6 +728,25 @@ fn group_into_topics(
 
 // ─── Manifest serialization ──────────────────────────────────────────────────
 
+/// Escape a Rust string for safe use as a Lua double-quoted string literal.
+fn escape_lua_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{{{:04x}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
     let mut buf = String::new();
     buf.push_str("return {\n");
@@ -738,16 +758,10 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
 
     for topic in topic_names {
         let (root, paths) = &topics[topic];
-        let _ = std::fmt::Write::write_fmt(
-            &mut buf,
-            format_args!("        {topic} = {{\n"),
-        );
+        writeln!(&mut buf, "        {} = {{", escape_lua_string(topic))?;
         if let Some(root) = root {
             let r = root.as_str().replace('\\', "/");
-            let _ = std::fmt::Write::write_fmt(
-                &mut buf,
-                format_args!("            root = \"{r}\",\n"),
-            );
+            writeln!(&mut buf, "            root = \"{}\",", escape_lua_string(&r))?;
         }
         buf.push_str("            paths = {");
         for (i, p) in paths.iter().enumerate() {
@@ -757,7 +771,7 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
             } else {
                 buf.push_str(", \"");
             }
-            buf.push_str(&s);
+            buf.push_str(&escape_lua_string(&s));
             buf.push('"');
         }
         buf.push_str("}\n");

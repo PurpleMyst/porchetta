@@ -3,14 +3,93 @@ use dirs::home_dir;
 
 use anyhow::{Context, Result, bail};
 use log::{debug, info, trace};
-use smallvec::SmallVec;
 
 #[derive(Debug)]
 pub struct PorchettaStore {
-    pub repo: gix::Repository,
+    repo: gix::Repository,
+}
+
+/// Outcome of attempting to fast-forward a branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastForwardOutcome {
+    /// Local and remote are already in sync.
+    UpToDate,
+    /// Local was fast-forwarded to remote.
+    FastForwarded,
+    /// Local and remote have diverged.
+    Diverged,
 }
 
 impl PorchettaStore {
+    /// Returns the standard Porchetta commit signature.
+    #[must_use]
+    pub fn porchetta_signature() -> gix::actor::Signature {
+        gix::actor::Signature {
+            name: "Porchetta".into(),
+            email: "".into(),
+            time: gix::date::Time::now_utc(),
+        }
+    }
+
+    // -- thin wrappers over gix::Repository --
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn empty_tree_id(&self) -> gix::ObjectId {
+        self.repo.empty_tree().id().into()
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn edit_tree(
+        &self,
+        id: impl Into<gix::ObjectId>,
+    ) -> Result<gix::object::tree::Editor<'_>> {
+        Ok(self.repo.edit_tree(id)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn write_blob(&self, data: impl AsRef<[u8]>) -> Result<gix::Id<'_>> {
+        Ok(self.repo.write_blob(data)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn find_object(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Object<'_>> {
+        Ok(self.repo.find_object(id)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn find_blob(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Blob<'_>> {
+        Ok(self.repo.find_blob(id)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn find_tree(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Tree<'_>> {
+        Ok(self.repo.find_tree(id)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn merge_trees(
+        &self,
+        base: impl AsRef<gix::oid>,
+        ours: impl AsRef<gix::oid>,
+        theirs: impl AsRef<gix::oid>,
+        labels: gix::merge::blob::builtin_driver::text::Labels,
+        options: gix::merge::tree::Options,
+    ) -> Result<gix::merge::tree::Outcome<'_>> {
+        Ok(self.repo.merge_trees(base, ours, theirs, labels, options)?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn tree_merge_options(&self) -> Result<gix::merge::tree::Options> {
+        Ok(self.repo.tree_merge_options()?)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn write_object(&self, object: impl gix::objs::WriteTo) -> Result<gix::Id<'_>> {
+        Ok(self.repo.write_object(object)?)
+    }
+
+    // --
+
     /// Initializes a new Porchetta store.
     ///
     /// # Errors
@@ -56,6 +135,12 @@ impl PorchettaStore {
     ///
     /// Returns an error if `git` is not available, if the clone fails, or if the
     /// resulting repository cannot be opened.
+    ///
+    /// # Implementation note
+    ///
+    /// We shell out to the `git` CLI rather than using `gix` directly so that
+    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
+    /// automatically.
     pub fn clone_from(url: &str, path: &Utf8Path) -> Result<Self> {
         let status = std::process::Command::new("git")
             .args(["clone", "--bare", url, path.as_str()])
@@ -140,20 +225,15 @@ impl PorchettaStore {
                 oid: blob_oid.into(),
             }],
         })?;
-        let signature = gix::actor::Signature {
-            name: "Porchetta".into(),
-            email: "".into(),
-            time: gix::date::Time::now_utc(),
-        };
         let commit_oid = self.repo.write_object(gix::objs::Commit {
             tree: tree_oid.into(),
             parents: self
                 .repo
                 .try_find_reference("heads/manifest")?
-                // XXX: ↓ We're not handling the id() error here, should we?
-                .map_or(SmallVec::default(), |r| [r.target().id().to_owned()].into()),
-            author: signature.clone(),
-            committer: signature,
+                .and_then(|r| r.target().try_id().map(|id| [id.to_owned()].into()))
+                .unwrap_or_default(),
+            author: Self::porchetta_signature(),
+            committer: Self::porchetta_signature(),
             encoding: None,
             message: "Update manifest".into(),
             extra_headers: vec![],
@@ -185,6 +265,38 @@ impl PorchettaStore {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Fast-forward `branch` to `remote_oid` if possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or updating the branch fails.
+    pub fn fast_forward_branch(
+        &self,
+        branch: &str,
+        remote_oid: gix::ObjectId,
+    ) -> Result<FastForwardOutcome> {
+        let Some(local_oid) = self.get_branch_head(branch)? else {
+            self.update_branch_head(branch, remote_oid)?;
+            return Ok(FastForwardOutcome::FastForwarded);
+        };
+
+        if remote_oid == local_oid {
+            return Ok(FastForwardOutcome::UpToDate);
+        }
+
+        if self.git_ancestor_check(remote_oid, local_oid)? {
+            // remote is ancestor of local, local is ahead
+            return Ok(FastForwardOutcome::UpToDate);
+        }
+
+        if self.git_ancestor_check(local_oid, remote_oid)? {
+            self.update_branch_head(branch, remote_oid)?;
+            return Ok(FastForwardOutcome::FastForwarded);
+        }
+
+        Ok(FastForwardOutcome::Diverged)
     }
 
     /// Gets the head commit for a topic.
@@ -273,14 +385,9 @@ impl PorchettaStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the `git` binary cannot be executed.
+    /// Returns an error if the repository configuration cannot be read.
     pub fn has_origin(&self) -> Result<bool> {
-        let output = std::process::Command::new("git")
-            .current_dir(self.repo.path())
-            .args(["config", "--get", "remote.origin.url"])
-            .output()
-            .context("Failed to run git config")?;
-        Ok(output.status.success())
+        Ok(self.repo.config_snapshot().string("remote.origin.url").is_some())
     }
 
     /// Runs `git fetch origin` in the store repository.
@@ -288,6 +395,12 @@ impl PorchettaStore {
     /// # Errors
     ///
     /// Returns an error if the `git` binary is missing or the fetch fails.
+    ///
+    /// # Implementation note
+    ///
+    /// We shell out to the `git` CLI rather than using `gix` directly so that
+    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
+    /// automatically.
     pub fn git_fetch(&self) -> Result<()> {
         let status = std::process::Command::new("git")
             .current_dir(self.repo.path())
@@ -304,32 +417,20 @@ impl PorchettaStore {
         Ok(())
     }
 
-    /// Runs `git merge-base --is-ancestor` to test ancestry.
+    /// Tests whether `ancestor` is an ancestor of `descendant`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the `git` binary is missing or the command fails unexpectedly.
+    /// Returns an error if the object graph cannot be traversed.
     pub fn git_ancestor_check(
         &self,
         ancestor: gix::ObjectId,
         descendant: gix::ObjectId,
     ) -> Result<bool> {
-        let status = std::process::Command::new("git")
-            .current_dir(self.repo.path())
-            .args([
-                "merge-base",
-                "--is-ancestor",
-                &ancestor.to_string(),
-                &descendant.to_string(),
-            ])
-            .status()
-            .context("Failed to run git merge-base")?;
-        if status.success() {
-            Ok(true)
-        } else if status.code() == Some(1) {
-            Ok(false)
-        } else {
-            bail!("git merge-base failed with unexpected exit code");
+        match self.repo.merge_base(ancestor, descendant) {
+            Ok(base) => Ok(base == ancestor),
+            Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -338,6 +439,12 @@ impl PorchettaStore {
     /// # Errors
     ///
     /// Returns an error if the `git` binary is missing or the push fails.
+    ///
+    /// # Implementation note
+    ///
+    /// We shell out to the `git` CLI rather than using `gix` directly so that
+    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
+    /// automatically.
     pub fn git_push(&self, refs: &[String]) -> Result<()> {
         if refs.is_empty() {
             return Ok(());
@@ -396,5 +503,67 @@ impl PorchettaStore {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    // -- compound operations --
+
+    /// Returns the tree OID for a topic, or the empty tree if the topic has no head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic head cannot be read or peeled.
+    pub fn get_topic_tree_oid(&self, topic: &str) -> Result<gix::ObjectId> {
+        match self.get_topic_head(topic)? {
+            Some(commit_oid) => Ok(self.find_object(commit_oid)?.peel_to_tree()?.id().into()),
+            None => Ok(self.empty_tree_id()),
+        }
+    }
+
+    /// Returns the tree OID for a topic on the current hostname, or the empty tree if none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hostname head cannot be read or peeled.
+    pub fn get_topic_hostname_tree_oid(
+        &self,
+        topic: &str,
+        hostname: &str,
+    ) -> Result<gix::ObjectId> {
+        match self.get_topic_hostname_head(topic, hostname)? {
+            Some(commit_oid) => Ok(self.find_object(commit_oid)?.peel_to_tree()?.id().into()),
+            None => Ok(self.empty_tree_id()),
+        }
+    }
+
+    /// Creates a commit for a topic tree and returns the commit OID.
+    ///
+    /// Parents are the current topic head and hostname head (deduplicated).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading heads or writing the commit fails.
+    pub fn commit_topic_tree(
+        &self,
+        topic: &str,
+        hostname: &str,
+        tree_oid: impl Into<gix::ObjectId>,
+        message: impl Into<gix::bstr::BString>,
+    ) -> Result<gix::ObjectId> {
+        let mut parents: smallvec::SmallVec<[gix::ObjectId; 1]> = self
+            .get_topic_head(topic)?
+            .into_iter()
+            .chain(self.get_topic_hostname_head(topic, hostname)?)
+            .collect();
+        parents.dedup();
+        let commit = gix::objs::Commit {
+            tree: tree_oid.into(),
+            parents,
+            message: message.into(),
+            author: Self::porchetta_signature(),
+            committer: Self::porchetta_signature(),
+            encoding: None,
+            extra_headers: vec![],
+        };
+        Ok(self.write_object(commit)?.into())
     }
 }
