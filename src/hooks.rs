@@ -11,13 +11,10 @@ pub fn run_hook(
     lua: &Lua,
     topic_name: &str,
     hook_name: &str,
-    key: &mlua::RegistryKey,
+    func: &mlua::Function,
     path: &str,
     content: &[u8],
 ) -> Result<Vec<u8>> {
-    let func: mlua::Function = lua
-        .registry_value(key)
-        .with_context(|| format!("Failed to retrieve {hook_name} hook for topic '{topic_name}'"))?;
     let path_arg = lua
         .create_string(path)
         .with_context(|| format!("Failed to create path string for {hook_name}"))?;
@@ -45,12 +42,9 @@ pub fn run_hook(
 pub fn run_should_include(
     lua: &Lua,
     topic_name: &str,
-    key: &mlua::RegistryKey,
+    func: &mlua::Function,
     path: &str,
 ) -> Result<bool> {
-    let func: mlua::Function = lua
-        .registry_value(key)
-        .with_context(|| format!("Failed to retrieve should_include hook for topic '{topic_name}'"))?;
     let path_arg = lua
         .create_string(path)
         .with_context(|| "Failed to create path string for should_include".to_string())?;
@@ -77,8 +71,7 @@ mod tests {
             .load(r#"function(path, content) return content:gsub("hello", "goodbye") end"#)
             .eval::<mlua::Function>()
             .unwrap();
-        let key = lua.create_registry_value(func).unwrap();
-        let result = run_hook(&lua, "test", "to_repo", &key, "a.txt", b"hello world").unwrap();
+        let result = run_hook(&lua, "test", "to_repo", &func, "a.txt", b"hello world").unwrap();
         assert_eq!(result, b"goodbye world");
     }
 
@@ -89,8 +82,7 @@ mod tests {
             .load(r"function(path, content) return 42 end")
             .eval::<mlua::Function>()
             .unwrap();
-        let key = lua.create_registry_value(func).unwrap();
-        let result = run_hook(&lua, "test", "to_repo", &key, "a.txt", b"hello world");
+        let result = run_hook(&lua, "test", "to_repo", &func, "a.txt", b"hello world");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must return a string"));
@@ -103,8 +95,7 @@ mod tests {
             .load(r"function(path) return true end")
             .eval::<mlua::Function>()
             .unwrap();
-        let key = lua.create_registry_value(func).unwrap();
-        let result = run_should_include(&lua, "test", &key, "a.txt").unwrap();
+        let result = run_should_include(&lua, "test", &func, "a.txt").unwrap();
         assert!(result);
     }
 
@@ -115,8 +106,7 @@ mod tests {
             .load(r"function(path) return false end")
             .eval::<mlua::Function>()
             .unwrap();
-        let key = lua.create_registry_value(func).unwrap();
-        let result = run_should_include(&lua, "test", &key, "a.txt").unwrap();
+        let result = run_should_include(&lua, "test", &func, "a.txt").unwrap();
         assert!(!result);
     }
 
@@ -127,8 +117,7 @@ mod tests {
             .load(r"function(path) return 'yes' end")
             .eval::<mlua::Function>()
             .unwrap();
-        let key = lua.create_registry_value(func).unwrap();
-        let result = run_should_include(&lua, "test", &key, "a.txt");
+        let result = run_should_include(&lua, "test", &func, "a.txt");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must return a boolean"));

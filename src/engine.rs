@@ -150,7 +150,7 @@ impl PorchettaEngine {
 
         let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
             match &info.should_include {
-                Some(key) => crate::hooks::run_should_include(lua, name, key, rel),
+                Some(func) => crate::hooks::run_should_include(lua, name, func, rel),
                 None => Ok(true),
             }
         })?;
@@ -165,7 +165,7 @@ impl PorchettaEngine {
         let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
         let snapshot = self::capture::capture_files(&topic_base, &topic_files_vec, |rel, content| {
             match &info.to_repo {
-                Some(key) => crate::hooks::run_hook(lua, name, "to_repo", key, rel, content),
+                Some(func) => crate::hooks::run_hook(lua, name, "to_repo", func, rel, content),
                 None => Ok(content.to_vec()),
             }
         })?;
@@ -269,8 +269,8 @@ impl PorchettaEngine {
                     name,
                     operations,
                     |rel, content| match &info.to_system {
-                        Some(key) => crate::hooks::run_hook(
-                            lua, name, "to_system", key, rel, content,
+                        Some(func) => crate::hooks::run_hook(
+                            lua, name, "to_system", func, rel, content,
                         ),
                         None => Ok(content.to_vec()),
                     },

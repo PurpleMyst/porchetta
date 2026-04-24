@@ -14,9 +14,9 @@ pub struct Manifest {
 pub struct Topic {
     pub root: Option<Utf8PathBuf>,
     pub paths: Vec<Utf8PathBuf>,
-    pub to_repo: Option<mlua::RegistryKey>,
-    pub to_system: Option<mlua::RegistryKey>,
-    pub should_include: Option<mlua::RegistryKey>,
+    pub to_repo: Option<mlua::Function>,
+    pub to_system: Option<mlua::Function>,
+    pub should_include: Option<mlua::Function>,
 }
 
 impl std::fmt::Debug for Topic {
@@ -72,7 +72,7 @@ impl Manifest {
                 });
 
             let to_repo = match topic.get("to_repo") {
-                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Function(f)) => Some(f.clone()),
                 Some(Value::Nil) | None => None,
                 Some(v) => bail!(
                     "Topic '{name}' field 'to_repo' must be a function, got {}",
@@ -81,7 +81,7 @@ impl Manifest {
             };
 
             let to_system = match topic.get("to_system") {
-                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Function(f)) => Some(f.clone()),
                 Some(Value::Nil) | None => None,
                 Some(v) => bail!(
                     "Topic '{name}' field 'to_system' must be a function, got {}",
@@ -90,7 +90,7 @@ impl Manifest {
             };
 
             let should_include = match topic.get("should_include") {
-                Some(Value::Function(f)) => Some(lua.create_registry_value(f.clone())?),
+                Some(Value::Function(f)) => Some(f.clone()),
                 Some(Value::Nil) | None => None,
                 Some(v) => bail!(
                     "Topic '{name}' field 'should_include' must be a function, got {}",
