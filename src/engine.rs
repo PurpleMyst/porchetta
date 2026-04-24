@@ -159,10 +159,12 @@ impl PorchettaEngine {
         }
 
         let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
-        let snapshot = self::capture::capture_files(&topic_base, &topic_files_vec, |rel, content| {
-            info.to_repo(rel, content)
-        })?;
-        let our_tree_oid = self::capture::write_snapshot(&self.store, &snapshot)?;
+        let our_tree_oid = self::capture::snapshot_topic(
+            &self.store,
+            &topic_base,
+            &topic_files_vec,
+            |rel, content| info.to_repo(rel, content),
+        )?;
         trace!("Built our tree: {our_tree_oid}");
 
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
