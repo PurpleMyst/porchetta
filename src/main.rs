@@ -167,8 +167,8 @@ fn main() -> Result<()> {
             if cli.verbose {
                 let manifest = Manifest::load(&manifest_bytes).context("Failed to parse manifest")?;
                 ui::info(&format!("{} topics", manifest.topics.len()));
-                for (name, topic) in &manifest.topics {
-                    ui::bullet(&format!("{name} ({} paths)", topic.paths.len()));
+                for topic in &manifest.topics {
+                    ui::bullet(&format!("{} ({} paths)", topic.name, topic.paths.len()));
                     for path in &topic.paths {
                         ui::muted(&format!("    {path}"));
                     }

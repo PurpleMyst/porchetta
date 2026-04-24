@@ -6,8 +6,8 @@ pub mod path_util;
 pub mod resolver;
 pub mod scan;
 
-use anyhow::{Context, Result, bail, ensure};
-use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use anyhow::{Context, Result, ensure};
+use camino::{Utf8Component, Utf8PathBuf};
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
 use gix::merge::tree::TreatAsUnresolved;
@@ -98,9 +98,9 @@ impl PorchettaEngine {
         debug!("Detected hostname: {hostname}");
 
         let mut refs_to_push: Vec<String> = Vec::new();
-        for (name, info) in &manifest.topics {
+        for info in &manifest.topics {
             refs_to_push.extend(self.sync_topic(
-                name, info, &hostname, &manifest.lua, dry_run, verbose, has_origin,
+                info, &hostname, dry_run, verbose, has_origin,
             )?);
         }
 
@@ -118,14 +118,13 @@ impl PorchettaEngine {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn sync_topic(
         &mut self,
-        name: &str,
         info: &crate::manifest::Topic,
         hostname: &str,
-        lua: &mlua::Lua,
         dry_run: bool,
         verbose: bool,
         has_origin: bool,
     ) -> Result<Vec<String>> {
+        let name = &info.name;
         debug!("Syncing topic '{name}'");
         let mut refs_to_push = Vec::new();
 
@@ -149,10 +148,7 @@ impl PorchettaEngine {
         }
 
         let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
-            match &info.should_include {
-                Some(func) => crate::hooks::run_should_include(lua, name, func, rel),
-                None => Ok(true),
-            }
+            info.should_include(rel)
         })?;
 
         let file_count = topic_files.len();
@@ -164,10 +160,7 @@ impl PorchettaEngine {
 
         let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
         let snapshot = self::capture::capture_files(&topic_base, &topic_files_vec, |rel, content| {
-            match &info.to_repo {
-                Some(func) => crate::hooks::run_hook(lua, name, "to_repo", func, rel, content),
-                None => Ok(content.to_vec()),
-            }
+            info.to_repo(rel, content)
         })?;
         let our_tree_oid = self::capture::write_snapshot(&self.store, &snapshot)?;
         trace!("Built our tree: {our_tree_oid}");
@@ -268,12 +261,7 @@ impl PorchettaEngine {
                     &topic_base,
                     name,
                     operations,
-                    |rel, content| match &info.to_system {
-                        Some(func) => crate::hooks::run_hook(
-                            lua, name, "to_system", func, rel, content,
-                        ),
-                        None => Ok(content.to_vec()),
-                    },
+                    |rel, content| info.to_system(rel, content),
                     |oid| self.store.find_blob(oid).map(|b| b.data.clone()),
                 )
                 .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;

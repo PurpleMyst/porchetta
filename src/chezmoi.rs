@@ -1184,12 +1184,11 @@ mod tests {
         let bytes = generate_manifest(&topics).unwrap();
         let manifest = Manifest::load(&bytes).unwrap();
         assert_eq!(manifest.topics.len(), 2);
-        assert_eq!(manifest.topics["shell"].paths.len(), 2);
-        assert!(manifest.topics["shell"].root.is_none());
-        assert_eq!(manifest.topics["nvim"].paths.len(), 2);
-        assert_eq!(
-            manifest.topics["nvim"].root,
-            Some(Utf8PathBuf::from(".config/nvim"))
-        );
+        let shell = manifest.topics.iter().find(|t| t.name == "shell").unwrap();
+        assert_eq!(shell.paths.len(), 2);
+        assert!(shell.root.is_none());
+        let nvim = manifest.topics.iter().find(|t| t.name == "nvim").unwrap();
+        assert_eq!(nvim.paths.len(), 2);
+        assert_eq!(nvim.root, Some(Utf8PathBuf::from(".config/nvim")));
     }
 }
