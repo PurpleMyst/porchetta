@@ -3,8 +3,8 @@ use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use log::{debug, warn};
 
-use crate::resolver::ConflictResolver;
 use crate::store::PorchettaStore;
+use super::resolver::ConflictResolver;
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.
 ///
@@ -86,15 +86,15 @@ fn resolve_tree_level_conflict(
     let (ours_change, theirs_change) = conflict.changes_in_resolution();
     let prompt = tree_conflict_prompt(conflict, ours_change, theirs_change);
     match resolver.resolve_tree_conflict(&prompt)? {
-        crate::resolver::TreeConflictResolution::KeepOurs => {
+        super::resolver::TreeConflictResolution::KeepOurs => {
             remove_change_effect_from_tree(merged_tree, theirs_change)?;
             apply_change_to_tree(merged_tree, ours_change)?;
         }
-        crate::resolver::TreeConflictResolution::KeepTheirs => {
+        super::resolver::TreeConflictResolution::KeepTheirs => {
             remove_change_effect_from_tree(merged_tree, ours_change)?;
             apply_change_to_tree(merged_tree, theirs_change)?;
         }
-        crate::resolver::TreeConflictResolution::Abort => {
+        super::resolver::TreeConflictResolution::Abort => {
             bail!("Sync aborted by user while resolving conflict");
         }
     }

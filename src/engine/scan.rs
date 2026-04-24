@@ -20,7 +20,7 @@ pub fn scan_topic_files(
     paths: &[Utf8PathBuf],
     mut should_include: impl FnMut(&str) -> Result<bool>,
 ) -> Result<HashSet<Utf8PathBuf>> {
-    use crate::path_util::to_tree_path;
+    use super::path_util::to_tree_path;
 
     for p in paths {
         ensure!(

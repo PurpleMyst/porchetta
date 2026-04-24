@@ -19,7 +19,7 @@ fn test_sync_fetches_and_fast_forwards_topic() {
     std::fs::create_dir_all(&remote_topic_dir).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "remote-content").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Clone the remote store locally.
@@ -29,18 +29,18 @@ fn test_sync_fetches_and_fast_forwards_topic() {
     let local_topic_dir = local_home.join(".config/test");
     std::fs::create_dir_all(&local_topic_dir).unwrap();
     std::fs::write(local_topic_dir.join("config.txt"), "remote-content").unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, false).unwrap();
 
     // Modify remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "remote-modified").unwrap();
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Local sync should fetch and apply remote changes.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, false).unwrap();
 
     let content = std::fs::read_to_string(local_topic_dir.join("config.txt")).unwrap();
@@ -72,7 +72,7 @@ fn test_sync_pushes_topic_and_system_heads() {
     std::fs::create_dir_all(&remote_topic_dir).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "initial").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Clone the remote store locally.
@@ -82,7 +82,7 @@ fn test_sync_pushes_topic_and_system_heads() {
     let local_topic_dir = local_home.join(".config/test");
     std::fs::create_dir_all(&local_topic_dir).unwrap();
     std::fs::write(local_topic_dir.join("config.txt"), "initial").unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, false).unwrap();
 
     // Modify local filesystem.
@@ -95,7 +95,7 @@ fn test_sync_pushes_topic_and_system_heads() {
 
     // Local sync should push changes to remote.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, false).unwrap();
 
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
@@ -130,7 +130,7 @@ fn test_sync_aborts_on_diverged_topic() {
     std::fs::create_dir_all(&remote_topic_dir).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "initial").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Clone the remote store locally.
@@ -140,24 +140,24 @@ fn test_sync_aborts_on_diverged_topic() {
     let local_topic_dir = local_home.join(".config/test");
     std::fs::create_dir_all(&local_topic_dir).unwrap();
     std::fs::write(local_topic_dir.join("config.txt"), "initial").unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Diverge local topic.
     std::fs::write(local_topic_dir.join("config.txt"), "local-diverged").unwrap();
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Diverge remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "remote-diverged").unwrap();
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Local sync should abort because topics diverged.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     let result = engine.sync(false, false, false);
     assert!(result.is_err(), "sync should abort on diverged topic");
     let err = result.unwrap_err().to_string();
@@ -181,7 +181,7 @@ fn test_sync_aborts_on_diverged_manifest() {
     std::fs::create_dir_all(&remote_topic_dir).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "initial").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Clone the remote store locally.
@@ -198,7 +198,7 @@ fn test_sync_aborts_on_diverged_manifest() {
 
     // Local sync should abort because manifest diverged.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     let result = engine.sync(false, false, false);
     assert!(result.is_err(), "sync should abort on diverged manifest");
     let err = result.unwrap_err().to_string();
@@ -222,7 +222,7 @@ fn test_sync_offline_skips_fetch_and_push() {
     std::fs::create_dir_all(&remote_topic_dir).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "initial").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Clone the remote store locally.
@@ -232,13 +232,13 @@ fn test_sync_offline_skips_fetch_and_push() {
     let local_topic_dir = local_home.join(".config/test");
     std::fs::create_dir_all(&local_topic_dir).unwrap();
     std::fs::write(local_topic_dir.join("config.txt"), "initial").unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     // Modify remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
     std::fs::write(remote_topic_dir.join("config.txt"), "remote-modified").unwrap();
-    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(remote_store, remote_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let cloned_topic_head = PorchettaStore::load_at(&local_path)
@@ -248,7 +248,7 @@ fn test_sync_offline_skips_fetch_and_push() {
 
     // Local sync with offline=true should NOT fetch remote changes.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
@@ -261,7 +261,7 @@ fn test_sync_offline_skips_fetch_and_push() {
     // Modify local filesystem and sync offline again.
     std::fs::write(local_topic_dir.join("config.txt"), "local-modified").unwrap();
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::resolver::PanickingResolver);
+    let mut engine = PorchettaEngine::with_home(local_store, local_home.clone(), porchetta::engine::resolver::PanickingResolver);
     engine.sync(false, false, true).unwrap();
 
     let remote_topic_head_before = PorchettaStore::load_at(&remote_path)

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use camino::Utf8Path;
 use gix::ObjectId;
 
-use crate::diff::ApplyOperation;
+use super::diff::ApplyOperation;
 
 /// Validate that `operations` can be applied to the filesystem under `topic_base`.
 ///

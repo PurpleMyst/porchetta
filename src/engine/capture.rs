@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gix::ObjectId;
 
-use crate::path_util::to_tree_path;
 use crate::store::PorchettaStore;
+use super::path_util::to_tree_path;
 
 /// A single captured file ready to be written into a git tree.
 pub struct SnapshotEntry {

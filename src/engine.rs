@@ -1,3 +1,11 @@
+pub mod apply;
+pub mod capture;
+pub mod diff;
+pub mod merge;
+pub mod path_util;
+pub mod resolver;
+pub mod scan;
+
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use gix::bstr::ByteSlice;
@@ -5,13 +13,8 @@ use gix::merge::blob::builtin_driver::text::Labels;
 use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace};
 
-use crate::apply;
-use crate::capture;
-use crate::diff;
+use self::resolver::ConflictResolver;
 use crate::manifest::Manifest;
-use crate::merge;
-use crate::resolver::ConflictResolver;
-use crate::scan;
 use crate::store::PorchettaStore;
 use crate::ui;
 
@@ -147,7 +150,7 @@ impl PorchettaEngine {
             self.maybe_fast_forward_topic(name, remote_oid)?;
         }
 
-        let topic_files = scan::scan_topic_files(&topic_base, &info.paths, |rel| {
+        let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
             match &info.should_include {
                 Some(key) => crate::hooks::run_should_include(lua, name, key, rel),
                 None => Ok(true),
@@ -162,13 +165,13 @@ impl PorchettaEngine {
         }
 
         let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
-        let snapshot = capture::capture_files(&topic_base, &topic_files_vec, |rel, content| {
+        let snapshot = self::capture::capture_files(&topic_base, &topic_files_vec, |rel, content| {
             match &info.to_repo {
                 Some(key) => crate::hooks::run_hook(lua, name, "to_repo", key, rel, content),
                 None => Ok(content.to_vec()),
             }
         })?;
-        let our_tree_oid = capture::write_snapshot(&self.store, &snapshot)?;
+        let our_tree_oid = self::capture::write_snapshot(&self.store, &snapshot)?;
         trace!("Built our tree: {our_tree_oid}");
 
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
@@ -205,14 +208,14 @@ impl PorchettaEngine {
                 }
                 let (ours_change, theirs_change) = conflict.changes_in_resolution();
                 let location_description =
-                    merge::conflict_location_description(ours_change, theirs_change);
+                    self::merge::conflict_location_description(ours_change, theirs_change);
                 ui::info(&format!("  unresolved conflict at {location_description}"));
             }
             return Ok(refs_to_push);
         }
 
         if !dry_run {
-            merge::resolve_conflicts(&self.store, self.resolver.as_ref(), &mut merge_outcome)?;
+            self::merge::resolve_conflicts(&self.store, self.resolver.as_ref(), &mut merge_outcome)?;
         }
 
         let merged_tree_oid = merge_outcome.tree.write()?;
@@ -248,7 +251,7 @@ impl PorchettaEngine {
         if pulled {
             let our_tree = self.store.find_tree(our_tree_oid)?;
             let merged_tree = self.store.find_tree(merged_tree_oid)?;
-            let operations = diff::collect_apply_operations(&our_tree, &merged_tree)
+            let operations = self::diff::collect_apply_operations(&our_tree, &merged_tree)
                 .with_context(|| format!("Failed to compute apply operations for topic '{name}'"))?;
 
             if dry_run {
@@ -258,10 +261,10 @@ impl PorchettaEngine {
                 ));
                 for op in &operations {
                     match op {
-                        diff::ApplyOperation::Upsert { relative_path, .. } => {
+                        self::diff::ApplyOperation::Upsert { relative_path, .. } => {
                             ui::info(&format!("  would upsert {relative_path}"));
                         }
-                        diff::ApplyOperation::Delete { relative_path } => {
+                        self::diff::ApplyOperation::Delete { relative_path } => {
                             ui::info(&format!("  would delete {relative_path}"));
                         }
                     }
@@ -274,10 +277,10 @@ impl PorchettaEngine {
                     ));
                 }
 
-                apply::preflight(&topic_base, name, &operations)
+                self::apply::preflight(&topic_base, name, &operations)
                     .with_context(|| format!("Pre-flight checks failed for topic '{name}'"))?;
 
-                apply::apply(
+                self::apply::apply(
                     &topic_base,
                     name,
                     operations,

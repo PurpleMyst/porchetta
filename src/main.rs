@@ -3,7 +3,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
-use porchetta::resolver::{ConflictResolver, TreeConflictResolution};
+use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
 use porchetta::manifest::Manifest;
 use porchetta::store::PorchettaStore;
 use porchetta::ui;

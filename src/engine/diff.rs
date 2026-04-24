@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use camino::Utf8PathBuf;
 use gix::ObjectId;
 
-use crate::path_util::diff_location_to_path;
+use super::path_util::diff_location_to_path;
 
 pub enum ApplyOperation {
     Upsert {
