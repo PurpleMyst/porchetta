@@ -165,6 +165,10 @@ impl Manifest {
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
+        let porchetta_tbl = lua.create_table()?;
+        porchetta_tbl.set("system", lua.create_function(crate::lua_runtime::system)?)?;
+        lua.globals().set("porchetta", porchetta_tbl)?;
+
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
         let manifest_table = manifest_value
             .as_table()
