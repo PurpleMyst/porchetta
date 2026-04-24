@@ -101,37 +101,62 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     if let Some(rest) = name.strip_prefix("create_") {
         kind = FileKind::Create;
         name = rest;
-        name = strip_encrypted(name);
-        name = strip_private(name);
-        name = strip_readonly(name);
-        name = strip_empty(name);
-        name = strip_executable(name);
-    } else if name.starts_with("remove_") {
+    } else if let Some(rest) = name.strip_prefix("remove_") {
         kind = FileKind::Remove;
-        name = &name["remove_".len()..];
-    } else if name.starts_with("run_") {
+        name = rest;
+    } else if let Some(rest) = name.strip_prefix("run_") {
         kind = FileKind::Script;
-        name = &name["run_".len()..];
-        // skip once_/onchange_/before_/after_ — all scripts are skipped anyway
+        name = rest;
         name = strip_script_condition(name);
         name = strip_script_order(name);
-    } else if name.starts_with("symlink_") {
+    } else if let Some(rest) = name.strip_prefix("symlink_") {
         kind = FileKind::Symlink;
-        name = &name["symlink_".len()..];
+        name = rest;
     } else if let Some(rest) = name.strip_prefix("modify_") {
         kind = FileKind::Modify;
         name = rest;
-        name = strip_encrypted(name);
-        name = strip_private(name);
-        name = strip_readonly(name);
-        name = strip_executable(name);
     } else {
         kind = FileKind::Regular;
-        name = strip_encrypted(name);
-        name = strip_private(name);
-        name = strip_readonly(name);
-        name = strip_empty(name);
-        name = strip_executable(name);
+    }
+
+    let mut encrypted = false;
+    let mut private = false;
+    let mut read_only = false;
+    let mut empty = false;
+    let mut executable = false;
+
+    if matches!(kind, FileKind::Regular | FileKind::Create | FileKind::Modify) {
+        loop {
+            let before = name;
+            let (found, rest) = strip_prefix(name, "encrypted_");
+            if found {
+                encrypted = true;
+                name = rest;
+            }
+            let (found, rest) = strip_prefix(name, "private_");
+            if found {
+                private = true;
+                name = rest;
+            }
+            let (found, rest) = strip_prefix(name, "readonly_");
+            if found {
+                read_only = true;
+                name = rest;
+            }
+            let (found, rest) = strip_prefix(name, "empty_");
+            if found {
+                empty = true;
+                name = rest;
+            }
+            let (found, rest) = strip_prefix(name, "executable_");
+            if found {
+                executable = true;
+                name = rest;
+            }
+            if name == before {
+                break;
+            }
+        }
     }
 
     let name_prefix: &str;
@@ -145,14 +170,8 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
         name_prefix = "";
     }
 
-    // strip encrypted suffix if encrypted (chezmoi uses the encrypted tool suffix, e.g. .age)
-    let encrypted = original.contains("encrypted_");
-    if encrypted {
-        // Strip any trailing suffix that looks like an encryption extension
-        // chezmoi uses the encryption tool name as suffix (e.g. .age, .asc)
-        if let Some(dot) = name.rfind('.') {
-            name = &name[..dot];
-        }
+    if encrypted && let Some(dot) = name.rfind('.') {
+        name = &name[..dot];
     }
 
     let template: bool;
@@ -162,8 +181,6 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     } else if name.ends_with(".tmpl") {
         name = &name[..name.len() - ".tmpl".len()];
         template = true;
-        // .tmpl may follow .literal, but chezmoi doesn't allow both; .literal inside .tmpl is
-        // handled by stripping .tmpl first.
         if name.ends_with(".literal") {
             name = &name[..name.len() - ".literal".len()];
         }
@@ -180,10 +197,10 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
         kind,
         template,
         encrypted,
-        executable: original.contains("executable_"),
-        private: original.contains("private_"),
-        read_only: original.contains("readonly_"),
-        empty: original.contains("empty_"),
+        executable,
+        private,
+        read_only,
+        empty,
     })
 }
 
@@ -196,26 +213,6 @@ fn strip_prefix<'a>(s: &'a str, prefix: &str) -> (bool, &'a str) {
     } else {
         (false, s)
     }
-}
-
-fn strip_encrypted(name: &str) -> &str {
-    name.strip_prefix("encrypted_").unwrap_or(name)
-}
-
-fn strip_private(name: &str) -> &str {
-    name.strip_prefix("private_").unwrap_or(name)
-}
-
-fn strip_readonly(name: &str) -> &str {
-    name.strip_prefix("readonly_").unwrap_or(name)
-}
-
-fn strip_empty(name: &str) -> &str {
-    name.strip_prefix("empty_").unwrap_or(name)
-}
-
-fn strip_executable(name: &str) -> &str {
-    name.strip_prefix("executable_").unwrap_or(name)
 }
 
 fn strip_script_condition(name: &str) -> &str {
