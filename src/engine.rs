@@ -79,7 +79,22 @@ impl PorchettaEngine {
     pub fn sync(&mut self, verbose: bool, dry_run: bool, offline: bool) -> Result<()> {
         debug!("Starting sync operation");
         let home = self.home.clone();
-        let mut manifest = Manifest::load(&self.store.read_manifest()?)?;
+
+        let has_origin = !offline && self.store.has_origin()?;
+
+        if has_origin {
+            self.store.git_fetch()?;
+            if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
+                use crate::store::FastForwardOutcome;
+                if self.store.fast_forward_branch("manifest", remote_oid)?
+                    == FastForwardOutcome::Diverged
+                {
+                    bail!("manifest branch has diverged between local and remote");
+                }
+            }
+        }
+
+        let manifest = Manifest::load(&self.store.read_manifest()?)?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
         let hostname = ::hostname::get()
@@ -88,21 +103,11 @@ impl PorchettaEngine {
             .into_owned();
         debug!("Detected hostname: {hostname}");
 
-        let has_origin = !offline && self.store.has_origin()?;
-
-        if has_origin {
-            self.store.git_fetch()?;
-            if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
-                self.maybe_fast_forward_manifest(remote_oid, &mut manifest)?;
-            }
-        }
-
         let mut refs_to_push: Vec<String> = Vec::new();
         for (name, info) in &manifest.topics {
-            let topic_refs = self.sync_topic(
+            refs_to_push.extend(self.sync_topic(
                 name, info, &home, &hostname, &manifest.lua, dry_run, verbose, has_origin,
-            )?;
-            refs_to_push.extend(topic_refs);
+            )?);
         }
 
         if !dry_run && has_origin && !refs_to_push.is_empty() {
@@ -323,24 +328,6 @@ impl PorchettaEngine {
             (false, true, false) => "pushed",
             (false, false, true) => "applied",
         }
-    }
-
-    fn maybe_fast_forward_manifest(
-        &mut self,
-        remote_oid: gix::ObjectId,
-        manifest: &mut Manifest,
-    ) -> Result<()> {
-        use crate::store::FastForwardOutcome;
-        match self.store.fast_forward_branch("manifest", remote_oid)? {
-            FastForwardOutcome::Diverged => {
-                bail!("manifest branch has diverged between local and remote");
-            }
-            FastForwardOutcome::FastForwarded => {
-                *manifest = Manifest::load(&self.store.read_manifest()?)?;
-            }
-            FastForwardOutcome::UpToDate => {}
-        }
-        Ok(())
     }
 
     fn maybe_fast_forward_topic(&self, name: &str, remote_oid: gix::ObjectId) -> Result<()> {
