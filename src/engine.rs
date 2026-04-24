@@ -98,7 +98,8 @@ impl PorchettaEngine {
 
         let mut refs_to_push: Vec<String> = Vec::new();
         for info in &manifest.topics {
-            refs_to_push.extend(self.sync_topic(info, &hostname, dry_run, verbose, has_origin)?);
+            refs_to_push
+                .extend(self.sync_topic(&manifest, info, &hostname, dry_run, verbose, has_origin)?);
         }
 
         if !dry_run && has_origin {
@@ -132,6 +133,7 @@ impl PorchettaEngine {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn sync_topic(
         &mut self,
+        manifest: &crate::manifest::Manifest,
         info: &crate::manifest::Topic,
         hostname: &str,
         dry_run: bool,
@@ -161,8 +163,13 @@ impl PorchettaEngine {
             self.maybe_fast_forward_topic(name, remote_oid)?;
         }
 
-        let topic_files =
-            self::scan::scan_topic_files(&topic_base, &info.paths, |rel| info.should_include(rel))?;
+        let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
+            let manifest_ok = manifest
+                .should_include(rel)
+                .with_context(|| format!("manifest-level should_include failed for '{rel}'"))?;
+            let topic_ok = info.should_include(rel)?;
+            Ok(manifest_ok && topic_ok)
+        })?;
 
         let file_count = topic_files.len();
         debug!("Topic '{name}' has {file_count} files to sync");
