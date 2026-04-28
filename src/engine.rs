@@ -84,9 +84,6 @@ impl DryRunSummary {
             "Summary: {} topic(s) checked, {} clean, {} changed, {} conflict(s)",
             self.total, self.unchanged, self.changed, self.conflicts
         ));
-        ui::muted(
-            "No system files or topic commits were written. Remote refs may have been fetched.",
-        );
     }
 }
 
