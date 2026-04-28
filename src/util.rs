@@ -31,12 +31,44 @@ fn is_in_path(program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        editor: Option<std::ffi::OsString>,
+        visual: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                _lock: ENV_LOCK.lock().unwrap(),
+                editor: std::env::var_os("EDITOR"),
+                visual: std::env::var_os("VISUAL"),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.editor {
+                    Some(v) => std::env::set_var("EDITOR", v),
+                    None => std::env::remove_var("EDITOR"),
+                }
+                match &self.visual {
+                    Some(v) => std::env::set_var("VISUAL", v),
+                    None => std::env::remove_var("VISUAL"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_get_editor_prefers_editor() {
-        // Temporarily override environment variables.
-        let old_editor = std::env::var_os("EDITOR");
-        let old_visual = std::env::var_os("VISUAL");
+        let _env = EnvGuard::new();
 
         unsafe {
             std::env::set_var("EDITOR", "my-custom-editor");
@@ -44,24 +76,11 @@ mod tests {
         }
 
         assert_eq!(get_editor().unwrap(), "my-custom-editor");
-
-        // Restore.
-        unsafe {
-            match old_editor {
-                Some(v) => std::env::set_var("EDITOR", v),
-                None => std::env::remove_var("EDITOR"),
-            }
-            match old_visual {
-                Some(v) => std::env::set_var("VISUAL", v),
-                None => std::env::remove_var("VISUAL"),
-            }
-        }
     }
 
     #[test]
     fn test_get_editor_falls_back_to_visual() {
-        let old_editor = std::env::var_os("EDITOR");
-        let old_visual = std::env::var_os("VISUAL");
+        let _env = EnvGuard::new();
 
         unsafe {
             std::env::remove_var("EDITOR");
@@ -69,16 +88,5 @@ mod tests {
         }
 
         assert_eq!(get_editor().unwrap(), "my-visual-editor");
-
-        unsafe {
-            match old_editor {
-                Some(v) => std::env::set_var("EDITOR", v),
-                None => std::env::remove_var("EDITOR"),
-            }
-            match old_visual {
-                Some(v) => std::env::set_var("VISUAL", v),
-                None => std::env::remove_var("VISUAL"),
-            }
-        }
     }
 }

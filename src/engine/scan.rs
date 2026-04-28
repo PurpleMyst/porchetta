@@ -13,8 +13,7 @@ use log::{debug, trace};
 ///
 /// # Errors
 ///
-/// Returns an error if a path contains `..`, a path does not exist, or
-/// the `should_include` closure fails.
+/// Returns an error if a path contains `..` or the `should_include` closure fails.
 pub fn scan_topic_files(
     topic_base: &Utf8Path,
     paths: &[Utf8PathBuf],
@@ -74,7 +73,7 @@ pub fn scan_topic_files(
                 }
             }
         } else {
-            bail!("Path '{abs_path}' does not exist or is not a file/directory");
+            debug!("Skipping missing path '{abs_path}'");
         }
     }
 
