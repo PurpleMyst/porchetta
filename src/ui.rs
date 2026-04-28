@@ -43,12 +43,12 @@ pub fn manifest_block(content: &str) {
 pub fn status(text: &str) -> String {
     match text {
         "unchanged" => text.dimmed().to_string(),
-        "pushed" => text.blue().bold().to_string(),
+        "captured" => text.blue().bold().to_string(),
         "applied" => text.yellow().bold().to_string(),
-        "synced" => text.green().bold().to_string(),
-        "would push" => text.blue().to_string(),
+        "captured and applied" => text.green().bold().to_string(),
+        "would capture" => text.blue().to_string(),
         "would apply" => text.yellow().to_string(),
-        "would sync" => text.green().to_string(),
+        "would capture and apply" => text.green().to_string(),
         _ => text.to_string(),
     }
 }

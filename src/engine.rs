@@ -319,14 +319,14 @@ impl PorchettaEngine {
         Ok(refs_to_push)
     }
 
-    fn topic_sync_status(dry_run: bool, pushed: bool, pulled: bool) -> &'static str {
-        match (dry_run, pushed, pulled) {
-            (true, true, true) => "would sync",
-            (true, true, false) => "would push",
+    fn topic_sync_status(dry_run: bool, captured: bool, applied: bool) -> &'static str {
+        match (dry_run, captured, applied) {
+            (true, true, true) => "would capture and apply",
+            (true, true, false) => "would capture",
             (true, false, true) => "would apply",
             (_, false, false) => "unchanged",
-            (false, true, true) => "synced",
-            (false, true, false) => "pushed",
+            (false, true, true) => "captured and applied",
+            (false, true, false) => "captured",
             (false, false, true) => "applied",
         }
     }
