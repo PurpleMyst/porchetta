@@ -54,7 +54,7 @@ return {
 - `paths` — files or directories to sync, relative to `root` (or home if `root` is omitted).
 - `root` — base directory for the topic's paths.
 
-### Rewrite Hooks
+### Hooks
 
 Topics can transform content on the way into or out of the store. This lets you keep secrets out of the repository while still managing the file as a topic.
 
@@ -69,14 +69,23 @@ return {
             to_system = function(path, content)
                 local token = os.getenv("GITHUB_TOKEN") or ""
                 return content:gsub("token = <redacted>", "token = " .. token)
+            end,
+            should_include = function(path)
+                return path:sub(-4) ~= ".bak"
             end
         }
-    }
+    },
+    should_include = function(path)
+        return path:sub(-4) ~= ".tmp"
+    end
 }
 ```
 
-- `to_repo(path, content) -> string` — called before storing in the repo.
-- `to_system(path, content) -> string` — called before writing to the filesystem.
+- `to_repo(path, content) -> string` — called before storing topic content in the repo.
+- `to_system(path, content) -> string` — called before writing topic content to the filesystem.
+- `should_include(path) -> boolean` — filters files or directories while scanning. It can be set either on a topic or at the top level of the manifest; both must return `true` for a path to be included.
+
+Manifest Lua code also has access to `porchetta.system(args[, stdin])`, which runs an external command and returns its stdout as a string.
 
 ## Commands
 
@@ -87,8 +96,9 @@ return {
 | `porchetta show` | Print the current manifest. |
 | `porchetta sync` | Synchronize all topics. |
 | `porchetta sync --dry-run` | Preview what would change without applying. |
+| `porchetta sync --offline` | Sync without fetching from or pushing to `origin`. |
 | `porchetta clone <url>` | Clone a remote store. Run `sync` next. |
-| `porchetta migrate chezmoi` | Import topics from a chezmoi source directory. |
+| `porchetta migrate chezmoi` | Import topics from a chezmoi source directory. Use `--source-dir <dir>` to override the default and `--yes` to skip the overwrite prompt. |
 
 ## Workflow Examples
 
@@ -109,10 +119,11 @@ porchetta sync
 porchetta sync
 ```
 
-### Preview before applying
+### Preview or work offline
 
 ```bash
 porchetta sync --dry-run
+porchetta sync --offline
 ```
 
 ### Migrate from chezmoi
