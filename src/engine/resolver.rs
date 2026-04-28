@@ -39,7 +39,7 @@ pub trait ConflictResolver {
     /// # Errors
     ///
     /// Returns an error if editing fails or the user cancels.
-    fn edit_blob(&self, content: &[u8]) -> Result<Vec<u8>>;
+    fn edit_blob(&self, content: &[u8], path: &str) -> Result<Vec<u8>>;
 }
 
 /// A resolver that panics if any conflict-resolution method is called.
@@ -61,7 +61,7 @@ impl ConflictResolver for PanickingResolver {
         panic!("PanickingResolver: unexpected entry-kind conflict in test");
     }
 
-    fn edit_blob(&self, _content: &[u8]) -> Result<Vec<u8>> {
+    fn edit_blob(&self, _content: &[u8], _path: &str) -> Result<Vec<u8>> {
         panic!("PanickingResolver: unexpected blob conflict in test");
     }
 }

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
@@ -48,10 +48,16 @@ impl ConflictResolver for InteractiveResolver {
         }
     }
 
-    fn edit_blob(&self, content: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn edit_blob(&self, content: &[u8], path: &str) -> anyhow::Result<Vec<u8>> {
+        let path = Utf8Path::new(path);
+        let file_stem = path.file_stem().unwrap_or("porchetta_conflict");
+        let extension = path.extension().unwrap_or("tmp");
+        let prefix = format!("{file_stem}-porchetta-conflict-");
+        let suffix = format!(".{extension}");
+
         let mut temp_file = tempfile::Builder::new()
-            .prefix("porchetta_conflict")
-            .suffix(".tmp")
+            .prefix(&prefix)
+            .suffix(&suffix)
             .tempfile()
             .context("Failed to create temp file for conflict editing")?;
         std::io::Write::write_all(&mut temp_file, content)

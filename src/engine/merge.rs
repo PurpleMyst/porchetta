@@ -66,7 +66,12 @@ fn resolve_blob_level_conflict(
     let content_merge = conflict
         .content_merge()
         .context("Expected merged blob for blob-level conflict")?;
-    let edited_blob_id = edit_blob_in_editor(store, resolver, content_merge.merged_blob_id)?;
+    let edited_blob_id = edit_blob_in_editor(
+        store,
+        resolver,
+        content_merge.merged_blob_id,
+        &ours_change.location().to_str_lossy(),
+    )?;
 
     let entry_kind = if ours_change.entry_mode().kind() == theirs_change.entry_mode().kind() {
         ours_change.entry_mode().kind()
@@ -236,13 +241,14 @@ fn edit_blob_in_editor(
     store: &PorchettaStore,
     resolver: &dyn ConflictResolver,
     blob_oid: ObjectId,
+    path: &str,
 ) -> Result<ObjectId> {
     let blob = store
         .find_blob(blob_oid)
         .with_context(|| format!("Failed to read merged blob '{blob_oid}' for conflict"))?;
 
     let edited_content = resolver
-        .edit_blob(&blob.data)
+        .edit_blob(&blob.data, path)
         .context("Failed to edit blob for conflict resolution")?;
     Ok(store.write_blob(edited_content)?.into())
 }
