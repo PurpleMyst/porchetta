@@ -49,6 +49,7 @@ pub fn status(text: &str) -> String {
         "would capture" => text.blue().to_string(),
         "would apply" => text.yellow().to_string(),
         "would capture and apply" => text.green().to_string(),
+        "conflict" => text.red().bold().to_string(),
         _ => text.to_string(),
     }
 }

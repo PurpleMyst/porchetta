@@ -24,6 +24,72 @@ pub struct PorchettaEngine {
     resolver: Box<dyn ConflictResolver>,
 }
 
+struct SyncTopicResult {
+    refs_to_push: Vec<String>,
+    status: SyncTopicStatus,
+}
+
+#[derive(Clone, Copy)]
+enum SyncTopicStatus {
+    Unchanged,
+    WouldCapture,
+    WouldApply,
+    WouldCaptureAndApply,
+    Conflict,
+    Captured,
+    Applied,
+    CapturedAndApplied,
+}
+
+impl SyncTopicStatus {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::WouldCapture => "would capture",
+            Self::WouldApply => "would apply",
+            Self::WouldCaptureAndApply => "would capture and apply",
+            Self::Conflict => "conflict",
+            Self::Captured => "captured",
+            Self::Applied => "applied",
+            Self::CapturedAndApplied => "captured and applied",
+        }
+    }
+}
+
+#[derive(Default)]
+struct DryRunSummary {
+    total: usize,
+    unchanged: usize,
+    changed: usize,
+    conflicts: usize,
+}
+
+impl DryRunSummary {
+    fn record(&mut self, status: SyncTopicStatus) {
+        self.total += 1;
+        match status {
+            SyncTopicStatus::Unchanged => self.unchanged += 1,
+            SyncTopicStatus::Conflict => self.conflicts += 1,
+            SyncTopicStatus::WouldCapture
+            | SyncTopicStatus::WouldApply
+            | SyncTopicStatus::WouldCaptureAndApply => self.changed += 1,
+            SyncTopicStatus::Captured
+            | SyncTopicStatus::Applied
+            | SyncTopicStatus::CapturedAndApplied => {}
+        }
+    }
+
+    fn print(self) {
+        ui::info(&format!(
+            "Summary: {} topic(s) checked, {} clean, {} changed, {} conflict(s)",
+            self.total, self.unchanged, self.changed, self.conflicts
+        ));
+        ui::muted(
+            "No system files or topic commits were written. Remote refs may have been fetched.",
+        );
+    }
+}
+
 impl PorchettaEngine {
     /// Creates an engine with the user's home directory.
     ///
@@ -97,9 +163,18 @@ impl PorchettaEngine {
         debug!("Detected hostname: {hostname}");
 
         let mut refs_to_push: Vec<String> = Vec::new();
+        let mut dry_run_summary = DryRunSummary::default();
         for info in &manifest.topics {
-            refs_to_push
-                .extend(self.sync_topic(&manifest, info, &hostname, dry_run, verbose, has_origin)?);
+            let result =
+                self.sync_topic(&manifest, info, &hostname, dry_run, verbose, has_origin)?;
+            refs_to_push.extend(result.refs_to_push);
+            if dry_run {
+                dry_run_summary.record(result.status);
+            }
+        }
+
+        if dry_run {
+            dry_run_summary.print();
         }
 
         if !dry_run && has_origin {
@@ -139,7 +214,7 @@ impl PorchettaEngine {
         dry_run: bool,
         verbose: bool,
         has_origin: bool,
-    ) -> Result<Vec<String>> {
+    ) -> Result<SyncTopicResult> {
         let name = &info.name;
         debug!("Syncing topic '{name}'");
         let mut refs_to_push = Vec::new();
@@ -207,7 +282,7 @@ impl PorchettaEngine {
         )?;
 
         if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
-            ui::bullet(&format!("{name} — would require conflict resolution"));
+            ui::bullet(&format!("{name} — {}", ui::status("conflict")));
             for conflict in &merge_outcome.conflicts {
                 if !conflict.is_unresolved(TreatAsUnresolved::default()) {
                     continue;
@@ -215,9 +290,15 @@ impl PorchettaEngine {
                 let (ours_change, theirs_change) = conflict.changes_in_resolution();
                 let location_description =
                     self::merge::conflict_location_description(ours_change, theirs_change);
-                ui::info(&format!("  unresolved conflict at {location_description}"));
+                ui::info(&format!(
+                    "  {location_description} changed both locally and in repo"
+                ));
             }
-            return Ok(refs_to_push);
+            ui::muted("  run `porchetta sync` to resolve interactively");
+            return Ok(SyncTopicResult {
+                refs_to_push,
+                status: SyncTopicStatus::Conflict,
+            });
         }
 
         if !dry_run {
@@ -233,11 +314,16 @@ impl PorchettaEngine {
 
         let changed_wrt_repo = merged_tree_oid != their_tree_oid;
         let changed_wrt_system = merged_tree_oid != our_tree_oid;
+        let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
+        if dry_run {
+            ui::bullet(&format!("{name} — {}", ui::status(status.label())));
+        }
         if changed_wrt_repo {
             if dry_run {
-                ui::bullet(&format!(
-                    "would make changes to repo (new tree {merged_tree_oid})"
-                ));
+                ui::info("  repo: would commit updated topic state");
+                if verbose {
+                    ui::muted(&format!("  new tree {merged_tree_oid}"));
+                }
             } else {
                 let commit_oid = self.store.commit_topic_tree(
                     name,
@@ -246,7 +332,7 @@ impl PorchettaEngine {
                     format!("Sync topic '{name}'"),
                 )?;
                 if verbose {
-                    ui::bullet(&format!("commited to repo ({commit_oid})"));
+                    ui::bullet(&format!("committed to repo ({commit_oid})"));
                 }
                 debug!("Created commit: {commit_oid}");
                 refs_to_push.push(format!("refs/heads/topic/{name}"));
@@ -264,17 +350,17 @@ impl PorchettaEngine {
                 })?;
 
             if dry_run {
-                ui::bullet(&format!(
-                    "would apply {} change(s) to system",
+                ui::info(&format!(
+                    "  system: would apply {} change(s) under {topic_base}",
                     operations.len()
                 ));
                 for op in &operations {
                     match op {
                         self::diff::ApplyOperation::Upsert { relative_path, .. } => {
-                            ui::info(&format!("  would upsert {relative_path}"));
+                            ui::muted(&format!("    upsert {relative_path}"));
                         }
                         self::diff::ApplyOperation::Delete { relative_path } => {
-                            ui::info(&format!("  would delete {relative_path}"));
+                            ui::muted(&format!("    delete {relative_path}"));
                         }
                     }
                 }
@@ -294,13 +380,14 @@ impl PorchettaEngine {
                 .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
 
                 if verbose {
-                    ui::bullet(&format!("applied {} change(s) to system", len));
+                    ui::bullet(&format!("applied {len} change(s) to system"));
                 }
             }
         }
 
-        let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
-        ui::bullet(&format!("{name} — {}", ui::status(status)));
+        if !dry_run {
+            ui::bullet(&format!("{name} — {}", ui::status(status.label())));
+        }
 
         if !dry_run {
             let topic_head = self
@@ -316,18 +403,21 @@ impl PorchettaEngine {
         }
 
         info!("Synchronized topic '{name}'");
-        Ok(refs_to_push)
+        Ok(SyncTopicResult {
+            refs_to_push,
+            status,
+        })
     }
 
-    fn topic_sync_status(dry_run: bool, captured: bool, applied: bool) -> &'static str {
+    fn topic_sync_status(dry_run: bool, captured: bool, applied: bool) -> SyncTopicStatus {
         match (dry_run, captured, applied) {
-            (true, true, true) => "would capture and apply",
-            (true, true, false) => "would capture",
-            (true, false, true) => "would apply",
-            (_, false, false) => "unchanged",
-            (false, true, true) => "captured and applied",
-            (false, true, false) => "captured",
-            (false, false, true) => "applied",
+            (true, true, true) => SyncTopicStatus::WouldCaptureAndApply,
+            (true, true, false) => SyncTopicStatus::WouldCapture,
+            (true, false, true) => SyncTopicStatus::WouldApply,
+            (_, false, false) => SyncTopicStatus::Unchanged,
+            (false, true, true) => SyncTopicStatus::CapturedAndApplied,
+            (false, true, false) => SyncTopicStatus::Captured,
+            (false, false, true) => SyncTopicStatus::Applied,
         }
     }
 

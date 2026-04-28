@@ -88,7 +88,11 @@ fn parse_dir_name(name: &str) -> Result<DirAttr> {
     })
 }
 
-#[allow(clippy::case_sensitive_file_extension_comparisons)]
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::too_many_lines,
+    reason = "chezmoi filename parsing has many explicit attribute cases"
+)]
 fn parse_file_name(name: &str) -> Result<FileAttr> {
     if name.is_empty() {
         bail!("empty filename");
