@@ -58,6 +58,9 @@ return {
 
 Topics can transform content on the way into or out of the store. This lets you keep secrets out of the repository while still managing the file as a topic.
 
+**NB**: Currently we normalize all valid UTF-8 so that CR-LF becomes just LF; this happens *after*
+the `to_repo` hook and *before* the `to_system` hook. In the future this might be more configurable.
+
 ```lua
 return {
     topics = {
