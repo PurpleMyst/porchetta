@@ -8,7 +8,7 @@ pub mod scan;
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use gix::bstr::ByteSlice;
+use gix::bstr::{BString, ByteSlice};
 use gix::merge::blob::builtin_driver::text::Labels;
 use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace};
@@ -178,7 +178,6 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn sync_topic(
         &mut self,
         manifest: &crate::manifest::Manifest,
@@ -224,11 +223,9 @@ impl PorchettaEngine {
             our_tree_oid,
             their_tree_oid,
             Labels {
-                ancestor: Some(
-                    gix::bstr::BString::from(format!("{name} (last applied)")).as_bstr(),
-                ),
-                current: Some(gix::bstr::BString::from(format!("{name} (on system)")).as_bstr()),
-                other: Some(gix::bstr::BString::from(format!("{name} (in repo)")).as_bstr()),
+                ancestor: Some(BString::from(format!("{name} (last applied)")).as_bstr()),
+                current: Some(BString::from(format!("{name} (on system)")).as_bstr()),
+                other: Some(BString::from(format!("{name} (in repo)")).as_bstr()),
             },
         )?;
 
