@@ -1,9 +1,9 @@
 use super::resolver::ConflictResolver;
 use crate::store::PorchettaStore;
 use anyhow::{Context, Result, bail, ensure};
-use gix::{ObjectId, diff::tree_with_rewrites::Change};
 use gix::bstr::ByteSlice;
 use gix::merge::tree::TreatAsUnresolved;
+use gix::{ObjectId, diff::tree_with_rewrites::Change};
 use log::{debug, warn};
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.
@@ -147,10 +147,7 @@ fn tree_conflict_prompt(
 }
 
 #[must_use]
-pub fn conflict_location_description(
-    ours_change: &Change,
-    theirs_change: &Change,
-) -> String {
+pub fn conflict_location_description(ours_change: &Change, theirs_change: &Change) -> String {
     let ours_location = ours_change.location();
     let theirs_location = theirs_change.location();
 
@@ -266,10 +263,7 @@ fn edit_blob_in_editor(
     Ok(store.write_blob(edited_content)?.into())
 }
 
-fn apply_change_to_tree(
-    tree: &mut gix::object::tree::Editor<'_>,
-    change: &Change,
-) -> Result<()> {
+fn apply_change_to_tree(tree: &mut gix::object::tree::Editor<'_>, change: &Change) -> Result<()> {
     match change {
         Change::Addition {
             location,
