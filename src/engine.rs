@@ -178,7 +178,7 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn sync_topic(
         &mut self,
         manifest: &crate::manifest::Manifest,
@@ -188,9 +188,7 @@ impl PorchettaEngine {
     ) -> Result<SyncTopicResult> {
         let name = &info.name;
         debug!("Syncing topic '{name}'");
-        let topic_base = if let Some(root) = &info.root
-            && !root.as_str().is_empty()
-        {
+        let topic_base = if let Some(root) = &info.root {
             self.home.join(root)
         } else {
             self.home.clone()
@@ -207,11 +205,10 @@ impl PorchettaEngine {
         let file_count = topic_files.len();
         debug!("Topic '{name}' has {file_count} files to sync");
 
-        let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
         let our_tree_oid = self::capture::snapshot_topic(
             &self.store,
             &topic_base,
-            &topic_files_vec,
+            topic_files.iter().map(camino::Utf8PathBuf::as_path),
             |rel, content| info.to_repo(rel, content),
         )?;
         trace!("Built our tree: {our_tree_oid}");
@@ -327,9 +324,6 @@ impl PorchettaEngine {
 
         if !dry_run {
             ui::bullet(&format!("{name} — {}", ui::status(status.label())));
-        }
-
-        if !dry_run {
             let topic_head = self
                 .store
                 .get_topic_head(name)?

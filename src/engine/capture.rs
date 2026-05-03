@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use gix::ObjectId;
 
 use super::path_util::to_tree_path;
@@ -22,10 +22,10 @@ fn normalize_line_endings(content: Vec<u8>) -> Vec<u8> {
 /// # Errors
 ///
 /// Returns an error if a file cannot be read, the transform fails, or writing to the store fails.
-pub fn snapshot_topic(
+pub fn snapshot_topic<'a>(
     store: &PorchettaStore,
     topic_base: &Utf8Path,
-    files: &[Utf8PathBuf],
+    files: impl IntoIterator<Item = &'a Utf8Path>,
     mut to_repo: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
 ) -> Result<ObjectId> {
     let mut editor = store.edit_tree(store.empty_tree_id())?;
