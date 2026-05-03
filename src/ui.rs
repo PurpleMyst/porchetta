@@ -1,4 +1,4 @@
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Style};
 
 /// Print a section header.
 pub fn header(text: &str) {
@@ -39,17 +39,41 @@ pub fn manifest_block(content: &str) {
 }
 
 /// Color a sync status string for display.
+pub fn color_status(text: &str) -> ColoredText<'_> {
+    const UNCHANGED: Style = Style::new().dimmed();
+    const CAPTURED: Style = Style::new().blue().bold();
+    const APPLIED: Style = Style::new().yellow().bold();
+    const CAPTURED_AND_APPLIED: Style = Style::new().green().bold();
+    const WOULD_CAPTURE: Style = Style::new().blue();
+    const WOULD_APPLY: Style = Style::new().yellow();
+    const WOULD_CAPTURE_AND_APPLY: Style = Style::new().green();
+    const CONFLICT: Style = Style::new().red().bold();
+
+    let style = match text {
+        "unchanged" => UNCHANGED,
+        "captured" => CAPTURED,
+        "applied" => APPLIED,
+        "captured and applied" => CAPTURED_AND_APPLIED,
+        "would capture" => WOULD_CAPTURE,
+        "would apply" => WOULD_APPLY,
+        "would capture and apply" => WOULD_CAPTURE_AND_APPLY,
+        "conflict" => CONFLICT,
+        _other => Style::new(),
+    };
+    ColoredText { text, style }
+}
+
+/// A non-allocating wrapper that displays text with ANSI style.
 #[must_use]
-pub fn color_status(text: &str) -> String {
-    match text {
-        "unchanged" => text.dimmed().to_string(),
-        "captured" => text.blue().bold().to_string(),
-        "applied" => text.yellow().bold().to_string(),
-        "captured and applied" => text.green().bold().to_string(),
-        "would capture" => text.blue().to_string(),
-        "would apply" => text.yellow().to_string(),
-        "would capture and apply" => text.green().to_string(),
-        "conflict" => text.red().bold().to_string(),
-        _ => text.to_string(),
+pub struct ColoredText<'a> {
+    text: &'a str,
+    style: Style,
+}
+
+impl std::fmt::Display for ColoredText<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.style.fmt_prefix(f)?;
+        f.write_str(self.text)?;
+        self.style.fmt_suffix(f)
     }
 }
