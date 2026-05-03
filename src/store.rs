@@ -347,20 +347,18 @@ impl PorchettaStore {
         Ok(())
     }
 
-    /// Updates the head commit for a topic on the current hostname.
+    /// Updates the system hostname head for a topic to match the topic branch head.
     ///
     /// # Errors
     ///
-    /// Returns an error if the topic hostname branch cannot be updated.
-    pub fn update_topic_hostname_head(
-        &self,
-        topic: &str,
-        hostname: &str,
-        new_head: gix::ObjectId,
-    ) -> Result<()> {
+    /// Returns an error if the topic head cannot be read or the branch cannot be updated.
+    pub fn update_topic_hostname_head(&self, topic: &str, hostname: &str) -> Result<()> {
+        let topic_head = self
+            .get_topic_head(topic)?
+            .context("Missing topic head for existing topic")?;
         let branch_name = format!("system/{hostname}/{topic}");
-        debug!("Updating topic hostname head for '{hostname}/{topic}' to {new_head}");
-        self.update_branch_head(&branch_name, new_head)
+        debug!("Updating topic hostname head for '{hostname}/{topic}' to {topic_head}");
+        self.update_branch_head(&branch_name, topic_head)
     }
 
     /// Gets the head commit for the manifest branch.

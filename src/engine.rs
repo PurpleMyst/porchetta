@@ -280,12 +280,7 @@ impl PorchettaEngine {
         }
 
         if !dry_run {
-            let topic_head = self
-                .store
-                .get_topic_head(name)?
-                .context("Missing topic head for existing topic")?;
-            self.store
-                .update_topic_hostname_head(name, hostname, topic_head)?;
+            self.store.update_topic_hostname_head(name, hostname)?;
         }
 
         info!("Synchronized topic '{name}'");
