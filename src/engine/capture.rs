@@ -36,7 +36,7 @@ pub fn snapshot_topic(
     paths: &[Utf8PathBuf],
     mut should_include: impl FnMut(&str) -> Result<bool>,
     mut to_repo: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
-) -> Result<(ObjectId, usize)> {
+) -> Result<ObjectId> {
     for p in paths {
         ensure!(
             !p.components().any(|c| c == Utf8Component::ParentDir),
@@ -101,7 +101,8 @@ pub fn snapshot_topic(
         }
     }
 
-    Ok((editor.write()?.into(), file_count))
+    debug!("Captured {file_count} files from topic paths");
+    Ok(editor.write()?.into())
 }
 
 fn snapshot_file(

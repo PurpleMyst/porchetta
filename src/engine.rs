@@ -192,7 +192,7 @@ impl PorchettaEngine {
             self.home.clone()
         };
 
-        let (our_tree_oid, file_count) = self::capture::snapshot_topic(
+        let our_tree_oid = self::capture::snapshot_topic(
             &self.store,
             &topic_base,
             &info.paths,
@@ -200,11 +200,12 @@ impl PorchettaEngine {
                 Ok(manifest
                     .should_include(rel)
                     .with_context(|| format!("manifest-level should_include failed for '{rel}'"))?
-                    && info.should_include(rel)?)
+                    && info.should_include(rel).with_context(|| {
+                        format!("topic-level should_include failed for '{rel}'")
+                    })?)
             },
             |rel, content| info.to_repo(rel, content),
         )?;
-        debug!("Topic '{name}' has {file_count} files to sync");
         trace!("Built our tree: {our_tree_oid}");
 
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
@@ -225,7 +226,7 @@ impl PorchettaEngine {
         )?;
 
         if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
-            ui::bullet(&format!("{name} — {}", ui::status("conflict")));
+            ui::bullet(&format!("{name} — {}", ui::color_status("conflict")));
             for conflict in &merge_outcome.conflicts {
                 if !conflict.is_unresolved(TreatAsUnresolved::default()) {
                     continue;
@@ -258,12 +259,10 @@ impl PorchettaEngine {
         let changed_wrt_system = merged_tree_oid != our_tree_oid;
         let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
         if dry_run {
-            ui::bullet(&format!("{name} — {}", ui::status(status.label())));
+            ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
         }
         if changed_wrt_repo {
-            if dry_run {
-                ui::info("  repo: would commit updated topic state");
-            } else {
+            if !dry_run {
                 let commit_oid = self.store.commit_topic_tree(
                     name,
                     hostname,
@@ -315,7 +314,7 @@ impl PorchettaEngine {
         }
 
         if !dry_run {
-            ui::bullet(&format!("{name} — {}", ui::status(status.label())));
+            ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
             let topic_head = self
                 .store
                 .get_topic_head(name)?

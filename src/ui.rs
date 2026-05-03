@@ -40,7 +40,7 @@ pub fn manifest_block(content: &str) {
 
 /// Color a sync status string for display.
 #[must_use]
-pub fn status(text: &str) -> String {
+pub fn color_status(text: &str) -> String {
     match text {
         "unchanged" => text.dimmed().to_string(),
         "captured" => text.blue().bold().to_string(),
