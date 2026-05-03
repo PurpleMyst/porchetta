@@ -1,5 +1,5 @@
-use anyhow::{Context, Result, bail};
-use camino::Utf8PathBuf;
+use anyhow::{Context, Result, bail, ensure};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use log::{debug, trace};
 use mlua::{Lua, Value};
 
@@ -128,6 +128,40 @@ impl Topic {
             None => Ok(true),
         }
     }
+
+    fn validate(&self) -> Result<()> {
+        if let Some(root) = &self.root {
+            ensure_relative_path(root, &format!("Topic '{}' root", self.name), PathKind::Root)?;
+        }
+
+        for path in &self.paths {
+            ensure_relative_path(path, &format!("Topic '{}' path", self.name), PathKind::Path)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PathKind {
+    Root,
+    Path,
+}
+
+fn ensure_relative_path(path: &Utf8Path, label: &str, kind: PathKind) -> Result<()> {
+    ensure!(
+        !path.is_absolute() && !path.has_root(),
+        "{label} '{path}' must be relative"
+    );
+    ensure!(
+        !path.components().any(|c| c == Utf8Component::ParentDir),
+        "{label} '{path}' contains '..' which is not allowed"
+    );
+    if matches!(kind, PathKind::Root) {
+        ensure!(path != Utf8Path::new("."), "{label} may not be '.'");
+    }
+
+    Ok(())
 }
 
 impl Manifest {
@@ -201,14 +235,21 @@ impl Manifest {
 
             trace!("Topic '{}' has {} paths", name, paths.len());
 
-            let root = topic.get("root").and_then(|v| v.as_string()).and_then(|s| {
-                let s = s.to_string_lossy();
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(Utf8PathBuf::from(s))
+            let root = match topic.get("root") {
+                Some(Value::String(s)) => {
+                    let s = s.to_string_lossy();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(Utf8PathBuf::from(s))
+                    }
                 }
-            });
+                Some(Value::Nil) | None => None,
+                Some(v) => bail!(
+                    "Topic '{name}' field 'root' must be a string, got {}",
+                    v.type_name()
+                ),
+            };
 
             let to_repo = match topic.get("to_repo") {
                 Some(Value::Function(f)) => Some(f.clone()),
@@ -249,6 +290,10 @@ impl Manifest {
         }
 
         topics.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for topic in &topics {
+            topic.validate()?;
+        }
 
         debug!("Manifest loaded with {} topics", topics.len());
         Ok(Manifest {
@@ -301,6 +346,109 @@ mod tests {
         );
         assert!(manifest.topics[0].root.is_none());
         assert!(manifest.topics[4].root.is_none()); // empty string normalized to None
+    }
+
+    #[test]
+    fn test_load_manifest_allows_dot_path() {
+        let manifest_content = r#"return {
+            topics = {
+                dotfiles = {
+                    paths = {"."},
+                }
+            }
+        }"#;
+
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+
+        assert_eq!(manifest.topics[0].paths, vec![Utf8PathBuf::from(".")]);
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_path_parent_dir() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {"../.gitconfig"},
+                }
+            }
+        }"#;
+
+        let err = Manifest::load(manifest_content.as_bytes())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("contains '..'"));
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_absolute_path() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {"/tmp/.gitconfig"},
+                }
+            }
+        }"#;
+
+        let err = Manifest::load(manifest_content.as_bytes())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("must be relative"));
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_root_parent_dir() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = "..",
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+
+        let err = Manifest::load(manifest_content.as_bytes())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("contains '..'"));
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_absolute_root() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = "/tmp",
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+
+        let err = Manifest::load(manifest_content.as_bytes())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("must be relative"));
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_non_string_root() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = true,
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+
+        let err = Manifest::load(manifest_content.as_bytes())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("root"));
     }
 
     #[test]

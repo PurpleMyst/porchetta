@@ -6,8 +6,8 @@ pub mod path_util;
 pub mod resolver;
 pub mod scan;
 
-use anyhow::{Context, Result, ensure};
-use camino::{Utf8Component, Utf8PathBuf};
+use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use gix::bstr::ByteSlice;
 use gix::merge::blob::builtin_driver::text::Labels;
 use gix::merge::tree::TreatAsUnresolved;
@@ -195,13 +195,6 @@ impl PorchettaEngine {
         } else {
             self.home.clone()
         };
-
-        for p in &info.paths {
-            ensure!(
-                !p.components().any(|c| c == Utf8Component::ParentDir),
-                "Topic '{name}' path '{p}' contains '..' which is not allowed"
-            );
-        }
 
         let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
             let manifest_ok = manifest
