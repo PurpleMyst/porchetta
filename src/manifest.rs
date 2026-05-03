@@ -164,6 +164,23 @@ fn ensure_relative_path(path: &Utf8Path, label: &str, kind: PathKind) -> Result<
     Ok(())
 }
 
+/// If `root` is an absolute/rooted path under `home`, normalize it to relative.
+fn normalize_root_under_home(root: &mut Option<Utf8PathBuf>, home: Option<&Utf8Path>) {
+    if let Some(home_dir) = home
+        && let Some(root_path) = root
+        && (root_path.is_absolute() || root_path.has_root())
+        && let Ok(rel) = root_path.strip_prefix(home_dir)
+    {
+        let rel = Utf8PathBuf::from(rel);
+        if rel.as_str().is_empty() {
+            // Root equals home → no explicit root needed
+            *root = None;
+        } else {
+            *root = Some(rel);
+        }
+    }
+}
+
 impl Manifest {
     /// Run the manifest-level `should_include` hook, returning whether a path should be included.
     ///
@@ -197,6 +214,20 @@ impl Manifest {
     ///
     /// Returns an error if the manifest is not a valid table or if any required fields are missing.
     pub fn load(manifest_content: &[u8]) -> Result<Self> {
+        Self::load_with_home(manifest_content, None)
+    }
+
+    /// Loads a manifest with an optional home directory for normalizing absolute roots.
+    ///
+    /// When `home` is provided, any absolute `root` path that falls under the home directory
+    /// is normalized to a relative path. Absolute roots outside the home directory are still
+    /// rejected during validation. Individual topic `paths` are never normalized — they must
+    /// always be relative.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is not a valid table or if any required fields are missing.
+    pub fn load_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
         let porchetta_tbl = lua.create_table()?;
@@ -235,7 +266,7 @@ impl Manifest {
 
             trace!("Topic '{}' has {} paths", name, paths.len());
 
-            let root = match topic.get("root") {
+            let mut root = match topic.get("root") {
                 Some(Value::String(s)) => {
                     let s = s.to_string_lossy();
                     if s.is_empty() {
@@ -250,6 +281,9 @@ impl Manifest {
                     v.type_name()
                 ),
             };
+
+            // Normalize absolute/rooted root that falls under the home directory
+            normalize_root_under_home(&mut root, home);
 
             let to_repo = match topic.get("to_repo") {
                 Some(Value::Function(f)) => Some(f.clone()),
@@ -430,6 +464,56 @@ mod tests {
             .unwrap_err()
             .to_string();
 
+        assert!(err.contains("must be relative"));
+    }
+
+    #[test]
+    fn test_load_manifest_normalizes_absolute_root_under_home() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = "/home/user/.config/git",
+                    paths = {"config"},
+                }
+            }
+        }"#;
+        let home = Utf8Path::new("/home/user");
+        let manifest = Manifest::load_with_home(manifest_content.as_bytes(), Some(home)).unwrap();
+        assert_eq!(
+            manifest.topics[0].root,
+            Some(Utf8PathBuf::from(".config/git"))
+        );
+    }
+
+    #[test]
+    fn test_load_manifest_normalizes_root_equal_to_home() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = "/home/user",
+                    paths = {"config"},
+                }
+            }
+        }"#;
+        let home = Utf8Path::new("/home/user");
+        let manifest = Manifest::load_with_home(manifest_content.as_bytes(), Some(home)).unwrap();
+        assert!(manifest.topics[0].root.is_none());
+    }
+
+    #[test]
+    fn test_load_manifest_absolute_root_outside_home_still_rejected() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    root = "/opt/other",
+                    paths = {"config"},
+                }
+            }
+        }"#;
+        let home = Utf8Path::new("/home/user");
+        let err = Manifest::load_with_home(manifest_content.as_bytes(), Some(home))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must be relative"));
     }
 

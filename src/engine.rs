@@ -142,7 +142,7 @@ impl PorchettaEngine {
             self.pull_manifest()?;
         }
 
-        let manifest = Manifest::load(&self.store.read_manifest()?)?;
+        let manifest = Manifest::load_with_home(&self.store.read_manifest()?, Some(&self.home))?;
         info!("Loaded manifest with {} topics", manifest.topics.len());
 
         let hostname = ::hostname::get()
