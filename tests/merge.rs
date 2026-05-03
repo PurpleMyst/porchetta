@@ -145,7 +145,7 @@ fn test_non_overlapping_changes_no_conflicts() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Modify local: change line 1
     std::fs::write(topic_dir.join("config.txt"), "local-line1\nline2\nline3\n").unwrap();
@@ -174,7 +174,7 @@ fn test_non_overlapping_changes_no_conflicts() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    let result = engine.sync(false, false, false);
+    let result = engine.sync(false, false);
 
     // Sync should succeed without conflicts
     assert!(
@@ -220,7 +220,7 @@ fn test_identical_changes_no_conflicts() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Modify local: change line 2
     std::fs::write(topic_dir.join("config.txt"), "line1\nchanged\nline3\n").unwrap();
@@ -249,7 +249,7 @@ fn test_identical_changes_no_conflicts() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    let result = engine.sync(false, false, false);
+    let result = engine.sync(false, false);
 
     assert!(result.is_ok(), "identical changes should auto-merge");
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
@@ -291,7 +291,7 @@ fn test_conflict_markers_are_minimal() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Local changes the header
     std::fs::write(
@@ -323,7 +323,7 @@ fn test_conflict_markers_are_minimal() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     assert_file_conflict_eq(
         &topic_dir.join("config.txt"),
@@ -362,7 +362,7 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Local changes lines 25-30 (the middle)
     let mut local_lines = base_lines.clone();
@@ -399,7 +399,7 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     let expected = format!(
         "{}<<<<<<<\n{}|||||||\n{}=======\n{}>>>>>>>\n{}",
@@ -443,7 +443,7 @@ fn test_partial_line_conflict_markers_minimal() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Local changes "alpha" and "epsilon"
     let local = "ALPHA\nbeta\ncharlie\ndelta\nEPSILON\n";
@@ -471,7 +471,7 @@ fn test_partial_line_conflict_markers_minimal() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     assert_file_conflict_eq(
         &topic_dir.join("config.txt"),
@@ -505,7 +505,7 @@ fn test_blob_conflict_passes_path_to_resolver() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     std::fs::write(topic_dir.join("subdir/config.lua"), "value = 'local'\n").unwrap();
 
@@ -535,7 +535,7 @@ fn test_blob_conflict_passes_path_to_resolver() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     assert_eq!(
         edited_path.lock().unwrap().as_deref(),
@@ -568,7 +568,7 @@ fn setup_modify_delete_conflict(home: &Utf8PathBuf, store_path: &Utf8PathBuf) {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(store_path).unwrap();
     let old_head = store.get_topic_head("test").unwrap().unwrap();
@@ -600,7 +600,7 @@ fn test_modify_delete_tree_conflict_keep_local_modification() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     let prompt = prompt.lock().unwrap().clone().unwrap();
     assert!(prompt.contains("Resolve tree conflict at 'config.txt'"));
@@ -627,7 +627,7 @@ fn test_modify_delete_tree_conflict_keep_remote_deletion() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     let prompt = prompt.lock().unwrap().clone().unwrap();
     assert!(prompt.contains("Resolve tree conflict at 'config.txt'"));
@@ -651,7 +651,7 @@ fn test_tree_conflict_abort_returns_error() {
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    let result = engine.sync(false, false, false);
+    let result = engine.sync(false, false);
 
     assert!(result.is_err());
     assert!(prompt.lock().unwrap().is_some());

@@ -22,7 +22,7 @@ fn test_sync_dry_run_does_not_create_commits() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, true, true).unwrap();
+    engine.sync(true, true).unwrap();
 
     let store = porchetta::store::PorchettaStore::load_at(&store_path).unwrap();
     assert!(
@@ -36,7 +36,7 @@ fn test_sync_dry_run_does_not_create_commits() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = porchetta::store::PorchettaStore::load_at(&store_path).unwrap();
     let head = store
@@ -72,7 +72,7 @@ fn test_sync_dry_run_does_not_create_commits() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, true, true).unwrap();
+    engine.sync(true, true).unwrap();
 
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
     assert_eq!(content, "original");
@@ -90,7 +90,7 @@ fn test_sync_dry_run_does_not_create_commits() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
     assert_eq!(

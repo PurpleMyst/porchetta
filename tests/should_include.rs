@@ -32,7 +32,7 @@ fn test_should_include_filters_files() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head = store
@@ -85,7 +85,7 @@ fn test_should_include_filters_directory_recursion() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head = store

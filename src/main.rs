@@ -4,7 +4,6 @@ use clap::{Parser, Subcommand};
 
 use porchetta::engine::PorchettaEngine;
 use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
-use porchetta::manifest::Manifest;
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
 
@@ -85,10 +84,6 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
-    /// Increase output verbosity
-    #[arg(short, long, global = true)]
-    verbose: bool,
-
     /// Decrease output verbosity
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -136,7 +131,7 @@ enum MigrateCommand {
     },
 }
 
-fn init_logging(_quiet: bool, _verbose: bool) -> Result<()> {
+fn init_logging(_quiet: bool) -> Result<()> {
     let log_dir = dirs::data_local_dir()
         .context("Could not determine local data directory")?
         .join("porchetta")
@@ -155,7 +150,7 @@ fn init_logging(_quiet: bool, _verbose: bool) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    init_logging(cli.quiet, cli.verbose)?;
+    init_logging(cli.quiet)?;
 
     match cli.command {
         Command::Init => {
@@ -168,18 +163,6 @@ fn main() -> Result<()> {
             let manifest_bytes = store.read_manifest().context("Failed to load manifest")?;
             ui::header("Manifest");
             ui::manifest_block(&String::from_utf8_lossy(&manifest_bytes));
-
-            if cli.verbose {
-                let manifest =
-                    Manifest::load(&manifest_bytes).context("Failed to parse manifest")?;
-                ui::info(&format!("{} topics", manifest.topics.len()));
-                for topic in &manifest.topics {
-                    ui::bullet(&format!("{} ({} paths)", topic.name, topic.paths.len()));
-                    for path in &topic.paths {
-                        ui::muted(&format!("    {path}"));
-                    }
-                }
-            }
         }
         Command::Edit => {
             let store = PorchettaStore::load().context("Failed to load store")?;
@@ -218,9 +201,7 @@ fn main() -> Result<()> {
             } else {
                 ui::header("Syncing topics");
             }
-            engine
-                .sync(cli.verbose, dry_run, offline)
-                .context("Failed to sync")?;
+            engine.sync(dry_run, offline).context("Failed to sync")?;
             if dry_run {
                 ui::success("Dry run complete");
             } else {

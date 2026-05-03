@@ -25,7 +25,7 @@ fn test_sync_fetches_and_fast_forwards_topic() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Clone the remote store locally.
     let local_store = PorchettaStore::clone_from(remote_path.as_str(), &local_path).unwrap();
@@ -39,7 +39,7 @@ fn test_sync_fetches_and_fast_forwards_topic() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     // Modify remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
@@ -49,7 +49,7 @@ fn test_sync_fetches_and_fast_forwards_topic() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Local sync should fetch and apply remote changes.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
@@ -58,7 +58,7 @@ fn test_sync_fetches_and_fast_forwards_topic() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     let content = std::fs::read_to_string(local_topic_dir.join("config.txt")).unwrap();
     assert_eq!(content, "remote-modified");
@@ -95,7 +95,7 @@ fn test_sync_pushes_topic_and_system_heads() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Clone the remote store locally.
     let local_store = PorchettaStore::clone_from(remote_path.as_str(), &local_path).unwrap();
@@ -109,7 +109,7 @@ fn test_sync_pushes_topic_and_system_heads() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     // Modify local filesystem.
     std::fs::write(local_topic_dir.join("config.txt"), "local-modified").unwrap();
@@ -126,7 +126,7 @@ fn test_sync_pushes_topic_and_system_heads() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, false).unwrap();
+    engine.sync(false, false).unwrap();
 
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
     let new_remote_topic_head = remote_store.get_topic_head("test").unwrap();
@@ -168,7 +168,7 @@ fn test_sync_aborts_on_diverged_topic() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Clone the remote store locally.
     let local_store = PorchettaStore::clone_from(remote_path.as_str(), &local_path).unwrap();
@@ -182,7 +182,7 @@ fn test_sync_aborts_on_diverged_topic() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Diverge local topic.
     std::fs::write(local_topic_dir.join("config.txt"), "local-diverged").unwrap();
@@ -192,7 +192,7 @@ fn test_sync_aborts_on_diverged_topic() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Diverge remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
@@ -202,7 +202,7 @@ fn test_sync_aborts_on_diverged_topic() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Local sync should abort because topics diverged.
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
@@ -211,7 +211,7 @@ fn test_sync_aborts_on_diverged_topic() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    let result = engine.sync(false, false, false);
+    let result = engine.sync(false, false);
     assert!(result.is_err(), "sync should abort on diverged topic");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -243,7 +243,7 @@ fn test_sync_aborts_on_diverged_manifest() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Clone the remote store locally.
     let _local_store = PorchettaStore::clone_from(remote_path.as_str(), &local_path).unwrap();
@@ -264,7 +264,7 @@ fn test_sync_aborts_on_diverged_manifest() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    let result = engine.sync(false, false, false);
+    let result = engine.sync(false, false);
     assert!(result.is_err(), "sync should abort on diverged manifest");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -296,7 +296,7 @@ fn test_sync_offline_skips_fetch_and_push() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Clone the remote store locally.
     let local_store = PorchettaStore::clone_from(remote_path.as_str(), &local_path).unwrap();
@@ -310,7 +310,7 @@ fn test_sync_offline_skips_fetch_and_push() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Modify remote topic.
     let remote_store = PorchettaStore::load_at(&remote_path).unwrap();
@@ -320,7 +320,7 @@ fn test_sync_offline_skips_fetch_and_push() {
         remote_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let cloned_topic_head = PorchettaStore::load_at(&local_path)
         .unwrap()
@@ -334,7 +334,7 @@ fn test_sync_offline_skips_fetch_and_push() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let local_store = PorchettaStore::load_at(&local_path).unwrap();
     let local_topic_head_after_sync = local_store.get_topic_head("test").unwrap();
@@ -351,7 +351,7 @@ fn test_sync_offline_skips_fetch_and_push() {
         local_home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let remote_topic_head_before = PorchettaStore::load_at(&remote_path)
         .unwrap()

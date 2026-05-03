@@ -138,7 +138,7 @@ impl PorchettaEngine {
     /// Returns an error if the home directory cannot be determined, if the manifest
     /// cannot be loaded, if hostname cannot be obtained, or if any file system operation,
     /// git operation, or conflict resolution fails.
-    pub fn sync(&mut self, verbose: bool, dry_run: bool, offline: bool) -> Result<()> {
+    pub fn sync(&mut self, dry_run: bool, offline: bool) -> Result<()> {
         debug!("Starting sync operation");
 
         let has_origin = !offline && self.store.has_origin()?;
@@ -162,8 +162,7 @@ impl PorchettaEngine {
         let mut refs_to_push: Vec<String> = Vec::new();
         let mut dry_run_summary = DryRunSummary::default();
         for info in &manifest.topics {
-            let result =
-                self.sync_topic(&manifest, info, &hostname, dry_run, verbose, has_origin)?;
+            let result = self.sync_topic(&manifest, info, &hostname, dry_run, has_origin)?;
             refs_to_push.extend(result.refs_to_push);
             if dry_run {
                 dry_run_summary.record(result.status);
@@ -191,9 +190,6 @@ impl PorchettaEngine {
             }
 
             if !refs_to_push.is_empty() {
-                if verbose {
-                    ui::info(&format!("Pushing {} ref(s) to origin", refs_to_push.len()));
-                }
                 self.store.git_push(&refs_to_push)?;
             }
         }
@@ -209,7 +205,6 @@ impl PorchettaEngine {
         info: &crate::manifest::Topic,
         hostname: &str,
         dry_run: bool,
-        verbose: bool,
         has_origin: bool,
     ) -> Result<SyncTopicResult> {
         let name = &info.name;
@@ -245,10 +240,6 @@ impl PorchettaEngine {
 
         let file_count = topic_files.len();
         debug!("Topic '{name}' has {file_count} files to sync");
-        if verbose {
-            ui::info(&format!("Syncing topic '{name}'"));
-            ui::bullet(&format!("{file_count} files scanned"));
-        }
 
         let topic_files_vec: Vec<_> = topic_files.iter().cloned().collect();
         let our_tree_oid = self::capture::snapshot_topic(
@@ -318,9 +309,6 @@ impl PorchettaEngine {
         if changed_wrt_repo {
             if dry_run {
                 ui::info("  repo: would commit updated topic state");
-                if verbose {
-                    ui::muted(&format!("  new tree {merged_tree_oid}"));
-                }
             } else {
                 let commit_oid = self.store.commit_topic_tree(
                     name,
@@ -328,9 +316,6 @@ impl PorchettaEngine {
                     merged_tree_oid,
                     format!("Sync topic '{name}'"),
                 )?;
-                if verbose {
-                    ui::bullet(&format!("committed to repo ({commit_oid})"));
-                }
                 debug!("Created commit: {commit_oid}");
                 refs_to_push.push(format!("refs/heads/topic/{name}"));
             }
@@ -362,8 +347,6 @@ impl PorchettaEngine {
                     }
                 }
             } else {
-                let len = operations.len();
-
                 self::apply::preflight(&topic_base, name, &operations)
                     .with_context(|| format!("Pre-flight checks failed for topic '{name}'"))?;
 
@@ -375,10 +358,6 @@ impl PorchettaEngine {
                     |oid| self.store.find_blob(oid).map(|b| b.data.clone()),
                 )
                 .with_context(|| format!("Failed to apply changes for topic '{name}'"))?;
-
-                if verbose {
-                    ui::bullet(&format!("applied {len} change(s) to system"));
-                }
             }
         }
 

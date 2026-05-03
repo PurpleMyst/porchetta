@@ -31,7 +31,7 @@ fn test_capture_rewrite() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head = store
@@ -81,7 +81,7 @@ fn test_apply_rewrite() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     // Manually create a new commit on the topic branch with repo-specific content.
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -112,7 +112,7 @@ fn test_apply_rewrite() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let system_content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
     assert_eq!(system_content, "hello SYSTEM");
@@ -150,7 +150,7 @@ fn test_rewrite_idempotence() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head_after_first = store.get_topic_head("test").unwrap().unwrap();
@@ -161,7 +161,7 @@ fn test_rewrite_idempotence() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head_after_second = store.get_topic_head("test").unwrap().unwrap();

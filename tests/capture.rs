@@ -23,17 +23,14 @@ fn test_capture_missing_manifest_file_path_removes_file() {
         home.clone(),
         porchetta::engine::resolver::PanickingResolver,
     );
-    engine.sync(false, false, true).unwrap();
+    engine.sync(false, true).unwrap();
 
     std::fs::remove_file(&config_path).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home,
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, false, true).unwrap();
+    let mut engine =
+        PorchettaEngine::with_home(store, home, porchetta::engine::resolver::PanickingResolver);
+    engine.sync(false, true).unwrap();
 
     let store = PorchettaStore::load_at(&store_path).unwrap();
     let head = store
