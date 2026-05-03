@@ -1,10 +1,10 @@
+use super::resolver::ConflictResolver;
+use crate::store::PorchettaStore;
 use anyhow::{Context, Result, bail, ensure};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
+use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, warn};
-
-use super::resolver::ConflictResolver;
-use crate::store::PorchettaStore;
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.
 ///
@@ -16,7 +16,6 @@ pub fn resolve_conflicts(
     resolver: &dyn ConflictResolver,
     outcome: &mut gix::merge::tree::Outcome<'_>,
 ) -> Result<()> {
-    use gix::merge::tree::TreatAsUnresolved;
     for conflict in &outcome.conflicts {
         if !conflict.is_unresolved(TreatAsUnresolved::default()) {
             continue;
@@ -24,6 +23,20 @@ pub fn resolve_conflicts(
         resolve_conflict(store, resolver, conflict, &mut outcome.tree)?;
     }
     Ok(())
+}
+
+/// Print a summary of all unresolved conflicts in the merge outcome.
+pub fn show_conflicts(outcome: &gix::merge::tree::Outcome<'_>) {
+    for conflict in &outcome.conflicts {
+        if !conflict.is_unresolved(TreatAsUnresolved::default()) {
+            continue;
+        }
+        let (ours_change, theirs_change) = conflict.changes_in_resolution();
+        let location_description = conflict_location_description(ours_change, theirs_change);
+        crate::ui::info(&format!(
+            "  {location_description} changed both locally and in repo"
+        ));
+    }
 }
 
 fn resolve_conflict(

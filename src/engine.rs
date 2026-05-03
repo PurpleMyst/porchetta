@@ -7,8 +7,6 @@ pub mod resolver;
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use gix::bstr::{BString, ByteSlice};
-use gix::merge::blob::builtin_driver::text::Labels;
 use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace};
 
@@ -206,35 +204,15 @@ impl PorchettaEngine {
             },
             |rel, content| info.to_repo(rel, content),
         )?;
-
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
-
         let base_tree_oid = self.store.get_topic_hostname_tree_oid(name, hostname)?;
-
-        let mut merge_outcome = self.store.merge_trees(
-            base_tree_oid,
-            our_tree_oid,
-            their_tree_oid,
-            Labels {
-                ancestor: Some(BString::from(format!("{name} (last applied)")).as_bstr()),
-                current: Some(BString::from(format!("{name} (on system)")).as_bstr()),
-                other: Some(BString::from(format!("{name} (in repo)")).as_bstr()),
-            },
-        )?;
+        let mut merge_outcome =
+            self.store
+                .merge_trees(base_tree_oid, our_tree_oid, their_tree_oid, name)?;
 
         if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
             ui::bullet(&format!("{name} — {}", ui::color_status("conflict")));
-            for conflict in &merge_outcome.conflicts {
-                if !conflict.is_unresolved(TreatAsUnresolved::default()) {
-                    continue;
-                }
-                let (ours_change, theirs_change) = conflict.changes_in_resolution();
-                let location_description =
-                    self::merge::conflict_location_description(ours_change, theirs_change);
-                ui::info(&format!(
-                    "  {location_description} changed both locally and in repo"
-                ));
-            }
+            self::merge::show_conflicts(&merge_outcome);
             ui::muted("  run `porchetta sync` to resolve interactively");
             return Ok(SyncTopicResult {
                 status: SyncTopicStatus::Conflict,
@@ -255,12 +233,14 @@ impl PorchettaEngine {
         let changed_wrt_repo = merged_tree_oid != their_tree_oid;
         let changed_wrt_system = merged_tree_oid != our_tree_oid;
         let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
-        if dry_run {
-            ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
-        }
+        ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
         if changed_wrt_repo {
-            if !dry_run {
-                let _commit_oid = self.store.commit_topic_tree(
+            if dry_run {
+                ui::bullet(&format!(
+                    "  repo: would update topic tree to {merged_tree_oid}"
+                ));
+            } else {
+                self.store.commit_topic_tree(
                     name,
                     hostname,
                     merged_tree_oid,
@@ -300,7 +280,6 @@ impl PorchettaEngine {
         }
 
         if !dry_run {
-            ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
             let topic_head = self
                 .store
                 .get_topic_head(name)?
@@ -313,8 +292,12 @@ impl PorchettaEngine {
         Ok(SyncTopicResult { status })
     }
 
-    fn topic_sync_status(dry_run: bool, captured: bool, applied: bool) -> SyncTopicStatus {
-        match (dry_run, captured, applied) {
+    fn topic_sync_status(
+        dry_run: bool,
+        changed_wrt_repo: bool,
+        changed_wrt_system: bool,
+    ) -> SyncTopicStatus {
+        match (dry_run, changed_wrt_repo, changed_wrt_system) {
             (true, true, true) => SyncTopicStatus::WouldCaptureAndApply,
             (true, true, false) => SyncTopicStatus::WouldCapture,
             (true, false, true) => SyncTopicStatus::WouldApply,

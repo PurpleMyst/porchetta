@@ -1,7 +1,7 @@
+use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use dirs::home_dir;
-
-use anyhow::{Context, Result, bail};
+use gix::bstr::{BString, ByteSlice};
 use log::{debug, info, trace};
 
 #[derive(Debug)]
@@ -58,11 +58,19 @@ impl PorchettaStore {
         base: impl AsRef<gix::oid>,
         ours: impl AsRef<gix::oid>,
         theirs: impl AsRef<gix::oid>,
-        labels: gix::merge::blob::builtin_driver::text::Labels,
+        name: impl std::fmt::Display,
     ) -> Result<gix::merge::tree::Outcome<'_>> {
-        Ok(self
-            .repo
-            .merge_trees(base, ours, theirs, labels, self.repo.tree_merge_options()?)?)
+        Ok(self.repo.merge_trees(
+            base,
+            ours,
+            theirs,
+            gix::merge::blob::builtin_driver::text::Labels {
+                ancestor: Some(BString::from(format!("{name} (last applied)")).as_bstr()),
+                current: Some(BString::from(format!("{name} (on system)")).as_bstr()),
+                other: Some(BString::from(format!("{name} (in repo)")).as_bstr()),
+            },
+            self.repo.tree_merge_options()?,
+        )?)
     }
 
     #[allow(clippy::missing_errors_doc)]
