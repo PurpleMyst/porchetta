@@ -5,11 +5,7 @@ use gix::ObjectId;
 use super::diff::ApplyOperation;
 
 /// Validate that `operations` can be applied to the filesystem under `topic_base`.
-///
-/// # Errors
-///
-/// Returns an error if an operation would conflict with an existing file or directory.
-pub fn preflight(
+fn validate_operations(
     topic_base: &Utf8Path,
     topic_name: &str,
     operations: &[ApplyOperation],
@@ -62,6 +58,8 @@ pub fn apply(
     mut to_system: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
     mut read_blob: impl FnMut(ObjectId) -> Result<Vec<u8>>,
 ) -> Result<()> {
+    validate_operations(topic_base, topic_name, &operations)?;
+
     for operation in operations {
         match operation {
             ApplyOperation::Upsert {

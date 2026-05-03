@@ -295,9 +295,6 @@ impl PorchettaEngine {
                     }
                 }
             } else {
-                self::apply::preflight(&topic_base, name, &operations)
-                    .with_context(|| format!("Pre-flight checks failed for topic '{name}'"))?;
-
                 self::apply::apply(
                     &topic_base,
                     name,
