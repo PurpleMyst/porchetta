@@ -3,6 +3,7 @@ use camino::Utf8Path;
 use gix::ObjectId;
 
 use super::diff::ApplyOperation;
+use crate::ui;
 
 /// Validate that `operations` can be applied to the filesystem under `topic_base`.
 fn validate_operations(
@@ -61,6 +62,7 @@ pub fn apply(
     validate_operations(topic_base, topic_name, &operations)?;
 
     for operation in operations {
+        ui::muted(&format!("  {operation}"));
         match operation {
             ApplyOperation::Upsert {
                 relative_path,
