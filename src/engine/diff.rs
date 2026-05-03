@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use anyhow::{Result, bail};
 use camino::Utf8PathBuf;
-use gix::ObjectId;
+use gix::{ObjectId, object::tree::diff::Change};
 
 use super::path_util::diff_location_to_path;
 
@@ -49,13 +49,13 @@ pub fn collect_apply_operations(
 
     changes.for_each_to_obtain_tree(merged_tree, |change| {
         match change {
-            gix::object::tree::diff::Change::Addition {
+            Change::Addition {
                 location,
                 entry_mode,
                 id,
                 ..
             }
-            | gix::object::tree::diff::Change::Modification {
+            | Change::Modification {
                 location,
                 entry_mode,
                 id,
@@ -70,7 +70,7 @@ pub fn collect_apply_operations(
                     blob_oid: id.detach(),
                 });
             }
-            gix::object::tree::diff::Change::Deletion {
+            Change::Deletion {
                 location,
                 entry_mode,
                 ..
@@ -83,7 +83,7 @@ pub fn collect_apply_operations(
                     relative_path: diff_location_to_path(location)?,
                 });
             }
-            gix::object::tree::diff::Change::Rewrite { .. } => {
+            Change::Rewrite { .. } => {
                 bail!("Rewrite operation encountered despite rewrite tracking being disabled");
             }
         }
