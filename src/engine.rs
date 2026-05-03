@@ -53,14 +53,14 @@ impl SyncTopicStatus {
 }
 
 #[derive(Default)]
-struct DryRunSummary {
+struct SyncSummary {
     total: usize,
     unchanged: usize,
     changed: usize,
     conflicts: usize,
 }
 
-impl DryRunSummary {
+impl SyncSummary {
     fn record(&mut self, status: SyncTopicStatus) {
         self.total += 1;
         match status {
@@ -68,10 +68,10 @@ impl DryRunSummary {
             SyncTopicStatus::Conflict => self.conflicts += 1,
             SyncTopicStatus::WouldCapture
             | SyncTopicStatus::WouldApply
-            | SyncTopicStatus::WouldCaptureAndApply => self.changed += 1,
-            SyncTopicStatus::Captured
+            | SyncTopicStatus::WouldCaptureAndApply
+            | SyncTopicStatus::Captured
             | SyncTopicStatus::Applied
-            | SyncTopicStatus::CapturedAndApplied => {}
+            | SyncTopicStatus::CapturedAndApplied => self.changed += 1,
         }
     }
 
@@ -139,7 +139,7 @@ impl PorchettaEngine {
 
         let has_origin = !offline && self.store.has_origin()?;
         if has_origin {
-            self.pull_manifest_ref()?;
+            self.pull_manifest()?;
         }
 
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
@@ -152,23 +152,18 @@ impl PorchettaEngine {
         debug!("Detected hostname: {hostname}");
 
         if has_origin {
-            self.pull_topic_refs(&manifest)?;
+            self.pull_topics(&manifest)?;
         }
 
-        let mut dry_run_summary = DryRunSummary::default();
+        let mut summary = SyncSummary::default();
         for info in &manifest.topics {
             let result = self.sync_topic(&manifest, info, &hostname, dry_run)?;
-            if dry_run {
-                dry_run_summary.record(result.status);
-            }
+            summary.record(result.status);
         }
-
-        if dry_run {
-            dry_run_summary.print();
-        }
+        summary.print();
 
         if !dry_run && has_origin {
-            self.store.git_push_all(&hostname)?;
+            self.store.push_all(&hostname)?;
         }
 
         debug!("Sync operation completed");
@@ -303,7 +298,7 @@ impl PorchettaEngine {
         }
     }
 
-    fn pull_manifest_ref(&self) -> Result<()> {
+    fn pull_manifest(&self) -> Result<()> {
         self.store.git_fetch()?;
         if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
             self.store.fast_forward_manifest(remote_oid)?;
@@ -311,7 +306,7 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    fn pull_topic_refs(&self, manifest: &Manifest) -> Result<()> {
+    fn pull_topics(&self, manifest: &Manifest) -> Result<()> {
         for topic in &manifest.topics {
             let name = &topic.name;
             if let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)? {

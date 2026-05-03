@@ -1,7 +1,7 @@
 use super::resolver::ConflictResolver;
 use crate::store::PorchettaStore;
 use anyhow::{Context, Result, bail, ensure};
-use gix::ObjectId;
+use gix::{ObjectId, diff::tree_with_rewrites::Change};
 use gix::bstr::ByteSlice;
 use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, warn};
@@ -121,8 +121,8 @@ fn resolve_tree_level_conflict(
 
 fn tree_conflict_prompt(
     conflict: &gix::merge::tree::Conflict,
-    ours_change: &gix::diff::tree_with_rewrites::Change,
-    theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ours_change: &Change,
+    theirs_change: &Change,
 ) -> String {
     let location_description = conflict_location_description(ours_change, theirs_change);
     let resolution_description = match &conflict.resolution {
@@ -148,8 +148,8 @@ fn tree_conflict_prompt(
 
 #[must_use]
 pub fn conflict_location_description(
-    ours_change: &gix::diff::tree_with_rewrites::Change,
-    theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ours_change: &Change,
+    theirs_change: &Change,
 ) -> String {
     let ours_location = ours_change.location();
     let theirs_location = theirs_change.location();
@@ -165,9 +165,9 @@ pub fn conflict_location_description(
     }
 }
 
-fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
+fn describe_change(change: &Change) -> String {
     match change {
-        gix::diff::tree_with_rewrites::Change::Addition {
+        Change::Addition {
             location,
             entry_mode,
             ..
@@ -178,7 +178,7 @@ fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
                 location.to_str_lossy()
             )
         }
-        gix::diff::tree_with_rewrites::Change::Deletion {
+        Change::Deletion {
             location,
             entry_mode,
             ..
@@ -189,7 +189,7 @@ fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
                 location.to_str_lossy()
             )
         }
-        gix::diff::tree_with_rewrites::Change::Modification {
+        Change::Modification {
             location,
             previous_entry_mode,
             entry_mode,
@@ -202,7 +202,7 @@ fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
                 entry_mode.kind()
             )
         }
-        gix::diff::tree_with_rewrites::Change::Rewrite {
+        Change::Rewrite {
             source_location,
             location,
             source_entry_mode,
@@ -225,8 +225,8 @@ fn describe_change(change: &gix::diff::tree_with_rewrites::Change) -> String {
 
 fn is_blob_level_conflict(
     conflict: &gix::merge::tree::Conflict,
-    ours_change: &gix::diff::tree_with_rewrites::Change,
-    theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ours_change: &Change,
+    theirs_change: &Change,
 ) -> bool {
     conflict.content_merge().is_some()
         && ours_change.location() == theirs_change.location()
@@ -236,8 +236,8 @@ fn is_blob_level_conflict(
 
 fn entry_kind_for_shared_location(
     resolver: &dyn ConflictResolver,
-    ours_change: &gix::diff::tree_with_rewrites::Change,
-    theirs_change: &gix::diff::tree_with_rewrites::Change,
+    ours_change: &Change,
+    theirs_change: &Change,
 ) -> Result<gix::objs::tree::EntryKind> {
     let ours_kind = ours_change.entry_mode().kind();
     let theirs_kind = theirs_change.entry_mode().kind();
@@ -268,16 +268,16 @@ fn edit_blob_in_editor(
 
 fn apply_change_to_tree(
     tree: &mut gix::object::tree::Editor<'_>,
-    change: &gix::diff::tree_with_rewrites::Change,
+    change: &Change,
 ) -> Result<()> {
     match change {
-        gix::diff::tree_with_rewrites::Change::Addition {
+        Change::Addition {
             location,
             entry_mode,
             id,
             ..
         }
-        | gix::diff::tree_with_rewrites::Change::Modification {
+        | Change::Modification {
             location,
             entry_mode,
             id,
@@ -285,10 +285,10 @@ fn apply_change_to_tree(
         } => {
             tree.upsert(location.as_bstr(), entry_mode.kind(), *id)?;
         }
-        gix::diff::tree_with_rewrites::Change::Deletion { location, .. } => {
+        Change::Deletion { location, .. } => {
             tree.remove(location.as_bstr())?;
         }
-        gix::diff::tree_with_rewrites::Change::Rewrite {
+        Change::Rewrite {
             source_location,
             location,
             entry_mode,
@@ -308,15 +308,15 @@ fn apply_change_to_tree(
 
 fn remove_change_effect_from_tree(
     tree: &mut gix::object::tree::Editor<'_>,
-    change: &gix::diff::tree_with_rewrites::Change,
+    change: &Change,
 ) -> Result<()> {
     match change {
-        gix::diff::tree_with_rewrites::Change::Addition { location, .. }
-        | gix::diff::tree_with_rewrites::Change::Modification { location, .. }
-        | gix::diff::tree_with_rewrites::Change::Rewrite { location, .. } => {
+        Change::Addition { location, .. }
+        | Change::Modification { location, .. }
+        | Change::Rewrite { location, .. } => {
             tree.remove(location.as_bstr())?;
         }
-        gix::diff::tree_with_rewrites::Change::Deletion { .. } => {}
+        Change::Deletion { .. } => {}
     }
 
     Ok(())

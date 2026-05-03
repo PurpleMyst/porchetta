@@ -443,7 +443,7 @@ impl PorchettaStore {
     /// We shell out to the `git` CLI rather than using `gix` directly so that
     /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
     /// automatically.
-    pub fn git_push_all(&self, hostname: &str) -> Result<()> {
+    pub fn push_all(&self, hostname: &str) -> Result<()> {
         let refspecs = [
             "refs/heads/manifest",
             "refs/heads/topic/*",
