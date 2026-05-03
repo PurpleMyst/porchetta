@@ -4,7 +4,6 @@ pub mod diff;
 pub mod merge;
 pub mod path_util;
 pub mod resolver;
-pub mod scan;
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
@@ -193,23 +192,19 @@ impl PorchettaEngine {
             self.home.clone()
         };
 
-        let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
-            let manifest_ok = manifest
-                .should_include(rel)
-                .with_context(|| format!("manifest-level should_include failed for '{rel}'"))?;
-            let topic_ok = info.should_include(rel)?;
-            Ok(manifest_ok && topic_ok)
-        })?;
-
-        let file_count = topic_files.len();
-        debug!("Topic '{name}' has {file_count} files to sync");
-
-        let our_tree_oid = self::capture::snapshot_topic(
+        let (our_tree_oid, file_count) = self::capture::snapshot_topic(
             &self.store,
             &topic_base,
-            topic_files.iter().map(camino::Utf8PathBuf::as_path),
+            &info.paths,
+            |rel| {
+                Ok(manifest
+                    .should_include(rel)
+                    .with_context(|| format!("manifest-level should_include failed for '{rel}'"))?
+                    && info.should_include(rel)?)
+            },
             |rel, content| info.to_repo(rel, content),
         )?;
+        debug!("Topic '{name}' has {file_count} files to sync");
         trace!("Built our tree: {our_tree_oid}");
 
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
