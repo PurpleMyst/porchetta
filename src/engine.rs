@@ -285,14 +285,7 @@ impl PorchettaEngine {
                     operations.len()
                 ));
                 for op in &operations {
-                    match op {
-                        self::diff::ApplyOperation::Upsert { relative_path, .. } => {
-                            ui::muted(&format!("    upsert {relative_path}"));
-                        }
-                        self::diff::ApplyOperation::Delete { relative_path } => {
-                            ui::muted(&format!("    delete {relative_path}"));
-                        }
-                    }
+                    ui::muted(&format!("    {op}"));
                 }
             } else {
                 self::apply::apply(

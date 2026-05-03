@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::ControlFlow;
 
 use anyhow::{Result, bail};
@@ -14,6 +15,19 @@ pub enum ApplyOperation {
     Delete {
         relative_path: Utf8PathBuf,
     },
+}
+
+impl fmt::Display for ApplyOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Upsert { relative_path, .. } => {
+                write!(f, "upsert {relative_path}")
+            }
+            Self::Delete { relative_path } => {
+                write!(f, "delete {relative_path}")
+            }
+        }
+    }
 }
 
 /// Compare `our_tree` with `merged_tree` and return the operations needed
