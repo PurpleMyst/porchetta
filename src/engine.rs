@@ -122,6 +122,8 @@ impl PorchettaEngine {
         debug!("Starting manifest edit");
         let manifest_content = self.store.read_manifest()?;
         let new_manifest_content = editor(&manifest_content)?;
+        // Validate the edited manifest before writing
+        Manifest::load_with_home(&new_manifest_content, Some(&self.home)).context("Edited manifest is invalid")?;
         self.store.write_manifest(&new_manifest_content)?;
         debug!("Manifest edit completed");
         Ok(())
