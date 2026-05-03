@@ -39,58 +39,49 @@ pub fn snapshot_topic(
 ) -> Result<ObjectId> {
     let mut editor = store.edit_tree(store.empty_tree_id())?;
     let mut file_count = 0;
+    let mut queue = VecDeque::new();
 
+    // Seed the queue with all topic paths
     for p in paths {
         let abs_path = topic_base.join(p);
-        if abs_path.is_file() {
+        if abs_path.exists() {
+            queue.push_back(abs_path);
+        } else {
+            debug!("Skipping missing path '{abs_path}'");
+        }
+    }
+
+    // Single unified processing loop
+    while let Some(p2) = queue.pop_front() {
+        if p2.file_name() == Some(".git") {
+            debug!("Skipping .git directory at '{p2}'");
+            continue;
+        }
+        if p2.is_file() {
             if snapshot_file(
                 store,
                 topic_base,
-                &abs_path,
+                &p2,
                 &mut should_include,
                 &mut to_repo,
                 &mut editor,
             )? {
                 file_count += 1;
             }
-        } else if abs_path.is_dir() {
-            trace!("Scanning directory: {abs_path}");
-            let mut queue = VecDeque::new();
-            queue.push_back(abs_path);
-            while let Some(p2) = queue.pop_front() {
-                if p2.file_name() == Some(".git") {
-                    debug!("Skipping .git directory at '{p2}'");
-                    continue;
-                }
-                if p2.is_file() {
-                    if snapshot_file(
-                        store,
-                        topic_base,
-                        &p2,
-                        &mut should_include,
-                        &mut to_repo,
-                        &mut editor,
-                    )? {
-                        file_count += 1;
-                    }
-                } else if p2.is_dir() {
-                    let relative_path = to_tree_path(p2.strip_prefix(topic_base)?);
-                    if !should_include(&relative_path)? {
-                        debug!("Excluding directory '{p2}' based on should_include hook");
-                        continue;
-                    }
-                    trace!("Queueing directory: {p2}");
-                    for entry in std::fs::read_dir(&p2)? {
-                        let path = Utf8PathBuf::try_from(entry?.path())
-                            .context("non-UTF-8 path encountered during scan")?;
-                        queue.push_back(path);
-                    }
-                } else {
-                    bail!("Path '{p2}' does not exist or is not a file/directory");
-                }
+        } else if p2.is_dir() {
+            let relative_path = to_tree_path(p2.strip_prefix(topic_base)?);
+            if !should_include(&relative_path)? {
+                debug!("Excluding directory '{p2}' based on should_include hook");
+                continue;
+            }
+            trace!("Queueing directory: {p2}");
+            for entry in std::fs::read_dir(&p2)? {
+                let path = Utf8PathBuf::try_from(entry?.path())
+                    .context("non-UTF-8 path encountered during scan")?;
+                queue.push_back(path);
             }
         } else {
-            debug!("Skipping missing path '{abs_path}'");
+            bail!("Path '{p2}' does not exist or is not a file/directory");
         }
     }
 
