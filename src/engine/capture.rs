@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use anyhow::{Context, Result, bail, ensure};
-use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use anyhow::{Context, Result, bail};
+use camino::{Utf8Path, Utf8PathBuf};
 use gix::ObjectId;
 use log::{debug, trace};
 
@@ -28,7 +28,7 @@ fn normalize_line_endings(content: Vec<u8>) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Returns an error if a path contains `..`, the include hook fails, a file cannot be read,
+/// Returns an error if the include hook fails, a file cannot be read,
 /// the transform fails, or writing to the store fails.
 pub fn snapshot_topic(
     store: &PorchettaStore,
@@ -37,13 +37,6 @@ pub fn snapshot_topic(
     mut should_include: impl FnMut(&str) -> Result<bool>,
     mut to_repo: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
 ) -> Result<ObjectId> {
-    for p in paths {
-        ensure!(
-            !p.components().any(|c| c == Utf8Component::ParentDir),
-            "path '{p}' contains '..' which is not allowed"
-        );
-    }
-
     let mut editor = store.edit_tree(store.empty_tree_id())?;
     let mut file_count = 0;
 
