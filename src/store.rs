@@ -522,10 +522,12 @@ impl PorchettaStore {
     ///
     /// Returns an error if the topic head cannot be read or peeled.
     pub fn get_topic_tree_oid(&self, topic: &str) -> Result<gix::ObjectId> {
-        match self.get_topic_head(topic)? {
-            Some(commit_oid) => Ok(self.find_object(commit_oid)?.peel_to_tree()?.id().into()),
-            None => Ok(self.empty_tree_id()),
-        }
+        let oid = match self.get_topic_head(topic)? {
+            Some(commit_oid) => self.find_object(commit_oid)?.peel_to_tree()?.id().into(),
+            None => self.empty_tree_id(),
+        };
+        trace!("Resolved topic '{topic}' tree to {oid}");
+        Ok(oid)
     }
 
     /// Returns the tree OID for a topic on the current hostname, or the empty tree if none.
@@ -538,10 +540,12 @@ impl PorchettaStore {
         topic: &str,
         hostname: &str,
     ) -> Result<gix::ObjectId> {
-        match self.get_topic_hostname_head(topic, hostname)? {
-            Some(commit_oid) => Ok(self.find_object(commit_oid)?.peel_to_tree()?.id().into()),
-            None => Ok(self.empty_tree_id()),
-        }
+        let oid = match self.get_topic_hostname_head(topic, hostname)? {
+            Some(commit_oid) => self.find_object(commit_oid)?.peel_to_tree()?.id().into(),
+            None => self.empty_tree_id(),
+        };
+        trace!("Resolved topic '{topic}' hostname '{hostname}' tree to {oid}");
+        Ok(oid)
     }
 
     /// Creates a commit for a topic tree and returns the commit OID.
@@ -575,7 +579,7 @@ impl PorchettaStore {
         };
         let commit_oid: gix::ObjectId = self.write_object(commit)?.into();
         let branch_name = format!("topic/{topic}");
-        debug!("Updating topic head for '{topic}' to {commit_oid}");
+        debug!("Committed topic '{topic}' as {commit_oid}");
         self.update_branch_head(&branch_name, commit_oid)?;
         Ok(commit_oid)
     }

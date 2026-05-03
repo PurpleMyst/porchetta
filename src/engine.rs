@@ -206,13 +206,10 @@ impl PorchettaEngine {
             },
             |rel, content| info.to_repo(rel, content),
         )?;
-        trace!("Built our tree: {our_tree_oid}");
 
         let their_tree_oid = self.store.get_topic_tree_oid(name)?;
-        trace!("Found their tree: {their_tree_oid}");
 
         let base_tree_oid = self.store.get_topic_hostname_tree_oid(name, hostname)?;
-        trace!("Found base tree: {base_tree_oid}");
 
         let mut merge_outcome = self.store.merge_trees(
             base_tree_oid,
@@ -263,13 +260,12 @@ impl PorchettaEngine {
         }
         if changed_wrt_repo {
             if !dry_run {
-                let commit_oid = self.store.commit_topic_tree(
+                let _commit_oid = self.store.commit_topic_tree(
                     name,
                     hostname,
                     merged_tree_oid,
                     format!("Sync topic '{name}'"),
                 )?;
-                debug!("Created commit: {commit_oid}");
             }
         } else {
             debug!("Topic '{name}' has no changes from repo");
