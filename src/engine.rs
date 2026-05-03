@@ -25,7 +25,6 @@ pub struct PorchettaEngine {
 }
 
 struct SyncTopicResult {
-    refs_to_push: Vec<String>,
     status: SyncTopicStatus,
 }
 
@@ -142,12 +141,8 @@ impl PorchettaEngine {
         debug!("Starting sync operation");
 
         let has_origin = !offline && self.store.has_origin()?;
-
         if has_origin {
-            self.store.git_fetch()?;
-            if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
-                self.store.fast_forward_branch("manifest", remote_oid)?;
-            }
+            self.pull_manifest_ref()?;
         }
 
         let manifest = Manifest::load(&self.store.read_manifest()?)?;
@@ -159,11 +154,13 @@ impl PorchettaEngine {
             .into_owned();
         debug!("Detected hostname: {hostname}");
 
-        let mut refs_to_push: Vec<String> = Vec::new();
+        if has_origin {
+            self.pull_topic_refs(&manifest)?;
+        }
+
         let mut dry_run_summary = DryRunSummary::default();
         for info in &manifest.topics {
-            let result = self.sync_topic(&manifest, info, &hostname, dry_run, has_origin)?;
-            refs_to_push.extend(result.refs_to_push);
+            let result = self.sync_topic(&manifest, info, &hostname, dry_run)?;
             if dry_run {
                 dry_run_summary.record(result.status);
             }
@@ -174,24 +171,7 @@ impl PorchettaEngine {
         }
 
         if !dry_run && has_origin {
-            if let Some(local_manifest) = self.store.get_manifest_head()? {
-                let push_manifest = match self.store.get_remote_manifest_head("origin")? {
-                    Some(remote_manifest) => {
-                        local_manifest != remote_manifest
-                            && self
-                                .store
-                                .git_ancestor_check(remote_manifest, local_manifest)?
-                    }
-                    None => true,
-                };
-                if push_manifest {
-                    refs_to_push.push("refs/heads/manifest".to_string());
-                }
-            }
-
-            if !refs_to_push.is_empty() {
-                self.store.git_push(&refs_to_push)?;
-            }
+            self.store.git_push_all(&hostname)?;
         }
 
         debug!("Sync operation completed");
@@ -205,12 +185,9 @@ impl PorchettaEngine {
         info: &crate::manifest::Topic,
         hostname: &str,
         dry_run: bool,
-        has_origin: bool,
     ) -> Result<SyncTopicResult> {
         let name = &info.name;
         debug!("Syncing topic '{name}'");
-        let mut refs_to_push = Vec::new();
-
         let topic_base = if let Some(root) = &info.root
             && !root.as_str().is_empty()
         {
@@ -224,10 +201,6 @@ impl PorchettaEngine {
                 !p.components().any(|c| c == Utf8Component::ParentDir),
                 "Topic '{name}' path '{p}' contains '..' which is not allowed"
             );
-        }
-
-        if has_origin && let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)? {
-            self.maybe_fast_forward_topic(name, remote_oid)?;
         }
 
         let topic_files = self::scan::scan_topic_files(&topic_base, &info.paths, |rel| {
@@ -284,7 +257,6 @@ impl PorchettaEngine {
             }
             ui::muted("  run `porchetta sync` to resolve interactively");
             return Ok(SyncTopicResult {
-                refs_to_push,
                 status: SyncTopicStatus::Conflict,
             });
         }
@@ -317,7 +289,6 @@ impl PorchettaEngine {
                     format!("Sync topic '{name}'"),
                 )?;
                 debug!("Created commit: {commit_oid}");
-                refs_to_push.push(format!("refs/heads/topic/{name}"));
             }
         } else {
             debug!("Topic '{name}' has no changes from repo");
@@ -370,19 +341,12 @@ impl PorchettaEngine {
                 .store
                 .get_topic_head(name)?
                 .context("Missing topic head for existing topic")?;
-            let old_system_head = self.store.get_topic_hostname_head(name, hostname)?;
             self.store
                 .update_topic_hostname_head(name, hostname, topic_head)?;
-            if old_system_head != Some(topic_head) {
-                refs_to_push.push(format!("refs/heads/system/{hostname}/{name}"));
-            }
         }
 
         info!("Synchronized topic '{name}'");
-        Ok(SyncTopicResult {
-            refs_to_push,
-            status,
-        })
+        Ok(SyncTopicResult { status })
     }
 
     fn topic_sync_status(dry_run: bool, captured: bool, applied: bool) -> SyncTopicStatus {
@@ -397,8 +361,21 @@ impl PorchettaEngine {
         }
     }
 
-    fn maybe_fast_forward_topic(&self, name: &str, remote_oid: gix::ObjectId) -> Result<()> {
-        self.store
-            .fast_forward_branch(&format!("topic/{name}"), remote_oid)
+    fn pull_manifest_ref(&self) -> Result<()> {
+        self.store.git_fetch()?;
+        if let Some(remote_oid) = self.store.get_remote_manifest_head("origin")? {
+            self.store.fast_forward_manifest(remote_oid)?;
+        }
+        Ok(())
+    }
+
+    fn pull_topic_refs(&self, manifest: &Manifest) -> Result<()> {
+        for topic in &manifest.topics {
+            let name = &topic.name;
+            if let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)? {
+                self.store.fast_forward_topic(name, remote_oid)?;
+            }
+        }
+        Ok(())
     }
 }

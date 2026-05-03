@@ -247,12 +247,7 @@ impl PorchettaStore {
         }
     }
 
-    /// Fast-forward `branch` to `remote_oid` if possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or updating the branch fails.
-    pub fn fast_forward_branch(&self, branch: &str, remote_oid: gix::ObjectId) -> Result<()> {
+    fn fast_forward_branch(&self, branch: &str, remote_oid: gix::ObjectId) -> Result<()> {
         let Some(local_oid) = self.get_branch_head(branch)? else {
             self.update_branch_head(branch, remote_oid)?;
             return Ok(());
@@ -275,6 +270,38 @@ impl PorchettaStore {
         bail!(
             "Cannot fast-forward branch '{branch}' from {local_oid} to {remote_oid} because they have diverged"
         );
+    }
+
+    /// Fast-forwards the manifest branch to `remote_oid` if possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or updating the branch fails.
+    pub fn fast_forward_manifest(&self, remote_oid: gix::ObjectId) -> Result<()> {
+        self.fast_forward_branch("manifest", remote_oid)
+    }
+
+    /// Fast-forwards a topic branch to `remote_oid` if possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or updating the branch fails.
+    pub fn fast_forward_topic(&self, topic: &str, remote_oid: gix::ObjectId) -> Result<()> {
+        self.fast_forward_branch(&format!("topic/{topic}"), remote_oid)
+    }
+
+    /// Fast-forwards a topic/hostname branch to `remote_oid` if possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or updating the branch fails.
+    pub fn fast_forward_topic_hostname(
+        &self,
+        topic: &str,
+        hostname: &str,
+        remote_oid: gix::ObjectId,
+    ) -> Result<()> {
+        self.fast_forward_branch(&format!("system/{hostname}/{topic}"), remote_oid)
     }
 
     /// Gets the head commit for a topic.
@@ -399,7 +426,7 @@ impl PorchettaStore {
         }
     }
 
-    /// Pushes the given refs to `origin`.
+    /// Pushes all Porchetta refs to `origin`.
     ///
     /// # Errors
     ///
@@ -410,15 +437,17 @@ impl PorchettaStore {
     /// We shell out to the `git` CLI rather than using `gix` directly so that
     /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
     /// automatically.
-    pub fn git_push(&self, refs: &[String]) -> Result<()> {
-        if refs.is_empty() {
-            return Ok(());
-        }
+    pub fn git_push_all(&self, hostname: &str) -> Result<()> {
+        let refspecs = [
+            "refs/heads/manifest",
+            "refs/heads/topic/*",
+            &format!("refs/heads/system/{hostname}/*"),
+        ];
         let status = std::process::Command::new("git")
             .current_dir(self.repo.path())
             .arg("push")
             .arg("origin")
-            .args(refs)
+            .args(refspecs)
             .status()
             .context("Failed to run git push")?;
         if !status.success() {
@@ -438,6 +467,21 @@ impl PorchettaStore {
         topic: &str,
     ) -> Result<Option<gix::ObjectId>> {
         let branch_name = format!("{remote}/topic/{topic}");
+        self.get_remote_branch_head(&branch_name)
+    }
+
+    /// Gets the head commit for a topic/hostname pair on a remote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote tracking branch cannot be read.
+    pub fn get_remote_topic_hostname_head(
+        &self,
+        remote: &str,
+        topic: &str,
+        hostname: &str,
+    ) -> Result<Option<gix::ObjectId>> {
+        let branch_name = format!("{remote}/system/{hostname}/{topic}");
         self.get_remote_branch_head(&branch_name)
     }
 
