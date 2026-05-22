@@ -16,10 +16,21 @@ This means you can edit a config file on one machine, sync to push it, then sync
 
 ## Installation
 
+Install via cargo from the Git repository:
+
 ```bash
-cargo install --path .
+cargo install --locked --git https://github.com/PurpleMyst/porchetta.git
 ```
 
+Or clone and install locally:
+
+```bash
+git clone https://github.com/PurpleMyst/porchetta.git
+cd porchetta
+cargo install --locked --path .
+```
+
+Either way, `--locked` ensures you get the exact dependency versions that were used for testing.
 Porchetta stores its bare Git repository at `~/.porchetta`.
 
 ## Quick Start
