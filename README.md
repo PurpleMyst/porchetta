@@ -43,63 +43,74 @@ porchetta sync
 
 ## Manifest
 
-The manifest is a Lua file that declares topics. Each topic groups related paths under a name.
+The manifest is a Lua file that declares topics. Each topic groups related paths under a name, with optional hooks to transform content on the way into or out of the store.
 
 ```lua
+local windows = package.config:sub(1, 1) == "\\"
+local home = windows and os.getenv("USERPROFILE"):gsub("\\", "/") or os.getenv("HOME")
+local nvim_root = windows and (os.getenv("LOCALAPPDATA") .. "/nvim") or (home .. "/.config/nvim")
+
 return {
     topics = {
-        shell = {
-            paths = {".bashrc", ".zshrc", ".inputrc"}
-        },
         git = {
-            paths = {".gitconfig", ".gitignore_global"}
+            paths = { ".gitconfig" },
+            to_system = function(_, content)
+                return content:gsub("__HOME__", home)
+            end,
+            to_repo = function(_, content)
+                -- scrub home paths in both slash directions
+                return content:gsub(home, "__HOME__")
+                         :gsub(home:gsub("/", "\\"), "__HOME__")
+            end,
         },
         nvim = {
-            root = ".config/nvim",
-            paths = {"init.lua", "lua/plugins.lua"}
-        }
-    }
+            root = nvim_root,  -- platform-dependent root
+            paths = { "init.lua", "lua", "snippets" },
+        },
+        pi_agent = {
+            root = ".pi/agent",
+            paths = { "settings.json", "AGENTS.md" },
+            to_repo = function(path, content)
+                if path:match(".json") then
+                    -- strip high-churn machine-specific keys
+                    local lines = {}
+                    for line in content:gmatch("[^\r\n]+") do
+                        if not (line:match("defaultProvider") or line:match("defaultModel")) then
+                            table.insert(lines, line)
+                        end
+                    end
+                    content = table.concat(lines, "\n")
+
+                    -- pipe through an external formatter
+                    content = porchetta.system({ "fixjson" }, content)
+                end
+                return content:gsub(home, "__HOME__")
+            end,
+            to_system = function(_, content)
+                return content:gsub("__HOME__", home)
+            end,
+        },
+        pi_agent_skills = {
+            root = ".pi/agent/skills",
+            paths = { "." },  -- sync the whole directory
+        },
+    },
+    should_include = function(path)
+        return not path:match("node_modules") and not path:match("dist")
+    end,
 }
 ```
 
-- `paths` — files or directories to sync, relative to `root` (or home if `root` is omitted).
-- `root` — base directory for the topic's paths.
-
-### Hooks
-
-Topics can transform content on the way into or out of the store. This lets you keep secrets out of the repository while still managing the file as a topic.
+- `root` — base directory for the topic's paths. Can be a computed value (e.g. platform-dependent).
+- `paths` — files or directories to sync, relative to `root` (or home if `root` is omitted). Use `"."` to capture an entire directory.
+- `to_repo(path, content) -> string` — called before storing topic content in the repo. Use this to scrub local paths, strip secrets, or normalize content.
+- `to_system(path, content) -> string` — called before writing topic content to the filesystem. Use this to restore placeholders like `__HOME__`.
+- `should_include(path) -> boolean` — filters files or directories while scanning. Can be set on a topic or at the top level; both must return `true` for a path to be included.
 
 **NB**: Currently we normalize all valid UTF-8 so that CR-LF becomes just LF; this happens *after*
 the `to_repo` hook and *before* the `to_system` hook. In the future this might be more configurable.
 
-```lua
-return {
-    topics = {
-        git = {
-            paths = {".gitconfig"},
-            to_repo = function(path, content)
-                return content:gsub("token = .-\n", "token = <redacted>\n")
-            end,
-            to_system = function(path, content)
-                local token = os.getenv("GITHUB_TOKEN") or ""
-                return content:gsub("token = <redacted>", "token = " .. token)
-            end,
-            should_include = function(path)
-                return path:sub(-4) ~= ".bak"
-            end
-        }
-    },
-    should_include = function(path)
-        return path:sub(-4) ~= ".tmp"
-    end
-}
-```
-
-- `to_repo(path, content) -> string` — called before storing topic content in the repo.
-- `to_system(path, content) -> string` — called before writing topic content to the filesystem.
-- `should_include(path) -> boolean` — filters files or directories while scanning. It can be set either on a topic or at the top level of the manifest; both must return `true` for a path to be included.
-
-Manifest Lua code also has access to `porchetta.system(args[, stdin])`, which runs an external command and returns its stdout as a string.
+Manifest Lua code also has access to `porchetta.system(args[, stdin])`, which runs an external command and returns its stdout as a string. This is useful for piping content through formatters like `fixjson` or `stylua` during capture.
 
 ## Commands
 
