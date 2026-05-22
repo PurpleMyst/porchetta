@@ -12,7 +12,7 @@ Porchetta is bidirectional. Each *topic* (e.g., `shell`, `git`, `nvim`) is track
 2. **Merge** — three-way merges local changes with the stored topic branch, using your machine's last-applied state as the base.
 3. **Apply** — writes merged changes back to your filesystem and commits the result.
 
-This means you can edit a config file on one machine, sync to push it, then sync on another machine to pull the change — with automatic conflict resolution when both sides diverge.
+This means you can edit a config file on one machine, sync to capture it, then sync on another machine to apply the change — with automatic conflict resolution when both sides diverge.
 
 ## Installation
 
@@ -169,8 +169,8 @@ For each topic, Porchetta builds three trees:
 
 It performs a three-way merge of these trees. The result is:
 
-- **Pushed** to the topic branch if it differs from `theirs`.
-- **Pulled** to the filesystem if it differs from `ours`.
+- **Captured** to the topic branch if it differs from `theirs`.
+- **Applied** to the filesystem if it differs from `ours`.
 - **Recorded** as the new base for this hostname.
 
 ### Conflict Resolution
