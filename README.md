@@ -137,10 +137,9 @@ porchetta sync
 ### Edit and propagate
 
 ```bash
-# Edit ~/.bashrc locally, then push it to the store
-porchetta sync
+# Edit ~/.bashrc locally, then capture it to the store
 
-# On another machine, pull the change
+# On another machine, apply the change
 porchetta sync
 ```
 
