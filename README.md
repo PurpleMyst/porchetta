@@ -37,7 +37,7 @@ Porchetta stores its bare Git repository at `~/.porchetta`.
 
 ```bash
 porchetta init
-porchetta edit   # edit manifest.lua
+porchetta manifest edit   # edit manifest.lua
 porchetta sync
 ```
 
@@ -117,8 +117,8 @@ Manifest Lua code also has access to `porchetta.system(args[, stdin])`, which ru
 | Command | Description |
 |---------|-------------|
 | `porchetta init` | Create a new store at `~/.porchetta`. |
-| `porchetta edit` | Open `manifest.lua` in `$EDITOR`. |
-| `porchetta show` | Print the current manifest. |
+| `porchetta manifest edit` | Open `manifest.lua` in `$EDITOR`. |
+| `porchetta manifest view` | Print the current manifest to stdout. |
 | `porchetta sync` | Synchronize all topics. |
 | `porchetta sync --dry-run` | Preview what would change without applying. |
 | `porchetta sync --offline` | Sync without fetching from or pushing to `origin`. |

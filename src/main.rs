@@ -93,10 +93,11 @@ struct Cli {
 enum Command {
     /// Initialize a new Porchetta store
     Init,
-    /// Open the manifest in your default editor
-    Edit,
-    /// Display the current manifest
-    Show,
+    /// Manage the manifest
+    Manifest {
+        #[command(subcommand)]
+        command: ManifestCommand,
+    },
     /// Apply the manifest to the local machine
     Sync {
         /// Preview changes without applying them
@@ -116,6 +117,14 @@ enum Command {
         #[command(subcommand)]
         command: MigrateCommand,
     },
+}
+
+#[derive(Subcommand, Clone)]
+enum ManifestCommand {
+    /// Open the manifest in your default editor
+    Edit,
+    /// Print the current manifest
+    View,
 }
 
 #[derive(Subcommand, Clone)]
@@ -158,13 +167,18 @@ fn main() -> Result<()> {
             ui::success("Initialized Porchetta store");
             ui::muted(&format!("  {}", PorchettaStore::store_path()?));
         }
-        Command::Show => {
+        Command::Manifest {
+            command: ManifestCommand::View,
+        } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let manifest_bytes = store.read_manifest().context("Failed to load manifest")?;
-            ui::header("Manifest");
-            ui::manifest_block(&String::from_utf8_lossy(&manifest_bytes));
+            let mut stdout = std::io::stdout().lock();
+            std::io::Write::write_all(&mut stdout, &manifest_bytes)
+                .context("Failed to write manifest to stdout")?;
         }
-        Command::Edit => {
+        Command::Manifest {
+            command: ManifestCommand::Edit,
+        } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store, InteractiveResolver)
                 .context("Failed to create engine")?;
@@ -238,4 +252,43 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_manifest_edit_command() {
+        let cli = Cli::try_parse_from(["porchetta", "manifest", "edit"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Manifest {
+                command: ManifestCommand::Edit
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_manifest_view_command() {
+        let cli = Cli::try_parse_from(["porchetta", "manifest", "view"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Manifest {
+                command: ManifestCommand::View
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_top_level_edit_command() {
+        let err = match Cli::try_parse_from(["porchetta", "edit"]) {
+            Ok(_) => panic!("top-level edit command should be rejected"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
 }
