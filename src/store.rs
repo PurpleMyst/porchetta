@@ -432,7 +432,7 @@ impl PorchettaStore {
         }
     }
 
-    /// Pushes all Porchetta refs to `origin`.
+    /// Pushes the manifest and the enabled topic refs for this host to `origin`.
     ///
     /// # Errors
     ///
@@ -443,12 +443,17 @@ impl PorchettaStore {
     /// We shell out to the `git` CLI rather than using `gix` directly so that
     /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
     /// automatically.
-    pub fn push_all(&self, hostname: &str) -> Result<()> {
-        let refspecs = [
-            "refs/heads/manifest",
-            "refs/heads/topic/*",
-            &format!("refs/heads/system/{hostname}/*"),
-        ];
+    pub fn push_enabled(&self, hostname: &str, topics: &[&str]) -> Result<()> {
+        let mut refspecs = vec!["refs/heads/manifest".to_string()];
+        for topic in topics {
+            if self.get_topic_head(topic)?.is_some() {
+                refspecs.push(format!("refs/heads/topic/{topic}"));
+            }
+            if self.get_topic_hostname_head(topic, hostname)?.is_some() {
+                refspecs.push(format!("refs/heads/system/{hostname}/{topic}"));
+            }
+        }
+
         let status = std::process::Command::new("git")
             .current_dir(self.repo.path())
             .arg("push")

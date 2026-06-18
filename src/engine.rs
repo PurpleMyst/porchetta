@@ -154,19 +154,29 @@ impl PorchettaEngine {
             .into_owned();
         debug!("Detected hostname: {hostname}");
 
+        let enabled_topics: Vec<_> = manifest
+            .topics
+            .iter()
+            .filter(|topic| topic.enabled)
+            .collect();
+
         if has_origin {
-            self.pull_topics(&manifest)?;
+            self.pull_topics(&enabled_topics)?;
         }
 
         let mut summary = SyncSummary::default();
-        for info in &manifest.topics {
+        for info in &enabled_topics {
             let result = self.sync_topic(&manifest, info, &hostname, dry_run)?;
             summary.record(result.status);
         }
         summary.print();
 
         if !dry_run && has_origin {
-            self.store.push_all(&hostname)?;
+            let enabled_names: Vec<_> = enabled_topics
+                .iter()
+                .map(|topic| topic.name.as_str())
+                .collect();
+            self.store.push_enabled(&hostname, &enabled_names)?;
         }
 
         debug!("Sync operation completed");
@@ -309,8 +319,8 @@ impl PorchettaEngine {
         Ok(())
     }
 
-    fn pull_topics(&self, manifest: &Manifest) -> Result<()> {
-        for topic in &manifest.topics {
+    fn pull_topics(&self, topics: &[&crate::manifest::Topic]) -> Result<()> {
+        for topic in topics {
             let name = &topic.name;
             if let Some(remote_oid) = self.store.get_remote_topic_head("origin", name)? {
                 self.store.fast_forward_topic(name, remote_oid)?;

@@ -103,3 +103,45 @@ fn test_should_include_filters_directory_recursion() {
         "files inside excluded directory should not be captured"
     );
 }
+
+#[test]
+fn test_sync_skips_disabled_topics() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = PorchettaStore::init_at(&store_path).unwrap();
+
+    let manifest = br#"return {
+        topics = {
+            enabled = {
+                root = ".config/enabled",
+                paths = {"."},
+            },
+            disabled = {
+                enabled = false,
+                root = ".config/disabled",
+                paths = {"."},
+            }
+        }
+    }"#;
+    store.write_manifest(manifest).unwrap();
+
+    let enabled_dir = home.join(".config/enabled");
+    std::fs::create_dir_all(&enabled_dir).unwrap();
+    std::fs::write(enabled_dir.join("config.txt"), "enabled").unwrap();
+
+    let disabled_dir = home.join(".config/disabled");
+    std::fs::create_dir_all(&disabled_dir).unwrap();
+    std::fs::write(disabled_dir.join("config.txt"), "disabled").unwrap();
+
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
+    engine.sync(false, true).unwrap();
+
+    let store = PorchettaStore::load_at(&store_path).unwrap();
+    assert!(store.get_topic_head("enabled").unwrap().is_some());
+    assert!(store.get_topic_head("disabled").unwrap().is_none());
+}

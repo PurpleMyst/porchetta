@@ -66,14 +66,34 @@ pub fn system(lua: &Lua, (args, stdin): (Table, Option<String>)) -> mlua::Result
     lua.create_string(&output.stdout)
 }
 
+/// Return the current hostname.
+///
+/// Called from Lua as:
+///
+/// ```lua
+/// local name = porchetta.hostname()
+/// ```
+///
+/// # Errors
+///
+/// Returns a Lua runtime error if the hostname cannot be determined.
+pub fn hostname(lua: &Lua, _: ()) -> mlua::Result<mlua::String> {
+    let hostname = ::hostname::get().map_err(|e| {
+        mlua::Error::RuntimeError(format!("porchetta.hostname: failed to get hostname: {e}"))
+    })?;
+    lua.create_string(hostname.to_string_lossy().as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn lua_with_system() -> Lua {
+    fn lua_with_porchetta() -> Lua {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.set("system", lua.create_function(system).unwrap())
+            .unwrap();
+        tbl.set("hostname", lua.create_function(hostname).unwrap())
             .unwrap();
         lua.globals().set("porchetta", tbl).unwrap();
         lua
@@ -81,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_system_echo() {
-        let lua = lua_with_system();
+        let lua = lua_with_porchetta();
         let result: String = lua
             .load(r#"porchetta.system({"echo", "hi"})"#)
             .eval()
@@ -91,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_system_stdin() {
-        let lua = lua_with_system();
+        let lua = lua_with_porchetta();
         let result: String = lua
             .load(r#"porchetta.system({"cat"}, "hello")"#)
             .eval()
@@ -101,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_system_missing_command() {
-        let lua = lua_with_system();
+        let lua = lua_with_porchetta();
         let result: mlua::Result<String> = lua
             .load(r#"porchetta.system({"porchetta-fake-binary-12345"})"#)
             .eval();
@@ -112,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_system_non_zero_exit() {
-        let lua = lua_with_system();
+        let lua = lua_with_porchetta();
         let result: mlua::Result<String> = lua.load(r#"porchetta.system({"false"})"#).eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -121,10 +141,17 @@ mod tests {
 
     #[test]
     fn test_system_empty_args() {
-        let lua = lua_with_system();
+        let lua = lua_with_porchetta();
         let result: mlua::Result<String> = lua.load(r#"porchetta.system({})"#).eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("args table must not be empty"));
+    }
+
+    #[test]
+    fn test_hostname() {
+        let lua = lua_with_porchetta();
+        let result: String = lua.load(r#"porchetta.hostname()"#).eval().unwrap();
+        assert!(!result.is_empty());
     }
 }

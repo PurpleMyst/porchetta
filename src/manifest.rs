@@ -21,6 +21,7 @@ impl std::fmt::Debug for Manifest {
 
 pub struct Topic {
     pub name: String,
+    pub enabled: bool,
     pub lua: Lua,
     pub root: Option<Utf8PathBuf>,
     pub paths: Vec<Utf8PathBuf>,
@@ -33,6 +34,7 @@ impl std::fmt::Debug for Topic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Topic")
             .field("name", &self.name)
+            .field("enabled", &self.enabled)
             .field("root", &self.root)
             .field("paths", &self.paths)
             .field("has_to_repo", &self.to_repo.is_some())
@@ -227,11 +229,16 @@ impl Manifest {
     /// # Errors
     ///
     /// Returns an error if the manifest is not a valid table or if any required fields are missing.
+    #[allow(clippy::too_many_lines)]
     pub fn load_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
         let porchetta_tbl = lua.create_table()?;
         porchetta_tbl.set("system", lua.create_function(crate::lua_runtime::system)?)?;
+        porchetta_tbl.set(
+            "hostname",
+            lua.create_function(crate::lua_runtime::hostname)?,
+        )?;
         lua.globals().set("porchetta", porchetta_tbl)?;
 
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
@@ -303,6 +310,15 @@ impl Manifest {
                 ),
             };
 
+            let enabled = match topic.get("enabled") {
+                Some(Value::Boolean(b)) => *b,
+                Some(Value::Nil) | None => true,
+                Some(v) => bail!(
+                    "Topic '{name}' field 'enabled' must be a boolean, got {}",
+                    v.type_name()
+                ),
+            };
+
             let should_include = match topic.get("should_include") {
                 Some(Value::Function(f)) => Some(f.clone()),
                 Some(Value::Nil) | None => None,
@@ -315,6 +331,7 @@ impl Manifest {
             topics.push(Topic {
                 name: name.clone(),
                 lua: lua.clone(),
+                enabled,
                 root,
                 paths,
                 to_repo,
@@ -606,6 +623,63 @@ mod tests {
     }
 
     #[test]
+    fn test_load_manifest_with_enabled() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    enabled = false,
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        assert!(!manifest.topics[0].enabled);
+    }
+
+    #[test]
+    fn test_load_manifest_defaults_enabled() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        assert!(manifest.topics[0].enabled);
+    }
+
+    #[test]
+    fn test_load_manifest_rejects_non_boolean_enabled() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    enabled = "yes",
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+        let result = Manifest::load(manifest_content.as_bytes());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("enabled"));
+    }
+
+    #[test]
+    fn test_load_manifest_with_hostname() {
+        let manifest_content = r#"return {
+            topics = {
+                git = {
+                    enabled = porchetta.hostname() ~= "",
+                    paths = {".gitconfig"},
+                }
+            }
+        }"#;
+        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        assert!(manifest.topics[0].enabled);
+    }
+
+    #[test]
     fn test_to_repo_transforms_content() {
         let lua = Lua::new();
         let func = lua
@@ -614,6 +688,7 @@ mod tests {
             .unwrap();
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
@@ -634,6 +709,7 @@ mod tests {
             .unwrap();
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
@@ -656,6 +732,7 @@ mod tests {
             .unwrap();
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
@@ -675,6 +752,7 @@ mod tests {
             .unwrap();
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
@@ -694,6 +772,7 @@ mod tests {
             .unwrap();
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
@@ -807,6 +886,7 @@ mod tests {
         };
         let topic = Topic {
             name: "test".to_string(),
+            enabled: true,
             lua: lua.clone(),
             root: None,
             paths: vec![],
