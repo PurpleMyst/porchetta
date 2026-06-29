@@ -106,10 +106,11 @@ the `to_repo` hook and *before* the `to_system` hook. In the future this might b
 
 Manifest Lua code has access to a small `porchetta` runtime:
 
-- `porchetta.json.decode(content)` parses JSON into Lua tables and values.
+- `porchetta.json.decode(content)` parses JSON into Lua tables and values. Decoded JSON arrays and objects keep their shape when encoded again, including empty arrays (`[]`) and empty objects (`{}`).
 - `porchetta.json.encode(value)` serializes a Lua value as compact JSON.
 - `porchetta.json.encode_pretty(value)` serializes a Lua value as pretty-printed JSON.
 - `porchetta.json.null` represents JSON `null`; a missing key is still Lua `nil`.
+- Lua-created empty tables encode as JSON objects (`{}`). If you need an empty array, decode one from JSON first and mutate it.
 - `porchetta.system(args[, stdin])` runs an external command and returns stdout. Use it for non-JSON formatters, generators, or other tools.
 
 ## Commands
