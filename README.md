@@ -72,17 +72,11 @@ return {
             paths = { "settings.json", "AGENTS.md" },
             to_repo = function(path, content)
                 if path:match(".json") then
-                    -- strip high-churn machine-specific keys
-                    local lines = {}
-                    for line in content:gmatch("[^\r\n]+") do
-                        if not (line:match("defaultProvider") or line:match("defaultModel")) then
-                            table.insert(lines, line)
-                        end
-                    end
-                    content = table.concat(lines, "\n")
-
-                    -- pipe through an external formatter
-                    content = porchetta.system({ "fixjson" }, content)
+                    -- strip high-churn machine-specific keys and normalize JSON
+                    local settings = porchetta.json.decode(content)
+                    settings.defaultProvider = nil
+                    settings.defaultModel = nil
+                    content = porchetta.json.encode_pretty(settings)
                 end
                 return content:gsub(home, "__HOME__")
             end,
@@ -110,7 +104,13 @@ return {
 **NB**: Currently we normalize all valid UTF-8 so that CR-LF becomes just LF; this happens *after*
 the `to_repo` hook and *before* the `to_system` hook. In the future this might be more configurable.
 
-Manifest Lua code also has access to `porchetta.system(args[, stdin])`, which runs an external command and returns its stdout as a string. This is useful for piping content through formatters like `fixjson` or `stylua` during capture.
+Manifest Lua code has access to a small `porchetta` runtime:
+
+- `porchetta.json.decode(content)` parses JSON into Lua tables and values.
+- `porchetta.json.encode(value)` serializes a Lua value as compact JSON.
+- `porchetta.json.encode_pretty(value)` serializes a Lua value as pretty-printed JSON.
+- `porchetta.json.null` represents JSON `null`; a missing key is still Lua `nil`.
+- `porchetta.system(args[, stdin])` runs an external command and returns stdout. Use it for non-JSON formatters, generators, or other tools.
 
 ## Commands
 

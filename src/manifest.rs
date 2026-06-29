@@ -233,13 +233,10 @@ impl Manifest {
     pub fn load_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
-        let porchetta_tbl = lua.create_table()?;
-        porchetta_tbl.set("system", lua.create_function(crate::lua_runtime::system)?)?;
-        porchetta_tbl.set(
-            "hostname",
-            lua.create_function(crate::lua_runtime::hostname)?,
+        lua.globals().set(
+            "porchetta",
+            crate::lua_runtime::create_porchetta_table(&lua)?,
         )?;
-        lua.globals().set("porchetta", porchetta_tbl)?;
 
         let manifest_value = lua.load(manifest_content).eval::<Value>()?;
         let manifest_table = manifest_value
