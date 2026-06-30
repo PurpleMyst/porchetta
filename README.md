@@ -113,6 +113,22 @@ Manifest Lua code has access to a small `porchetta` runtime:
 - Lua-created empty tables encode as JSON objects (`{}`). If you need an empty array, decode one from JSON first and mutate it.
 - `porchetta.system(args[, stdin])` runs an external command and returns stdout. Use it for non-JSON formatters, generators, or other tools.
 
+### LuaLS support
+
+`porchetta manifest edit` opens the manifest in a temporary LuaLS workspace containing `.luarc.json` and Porchetta's runtime definitions. Neovim users with LuaLS already installed/configured should get `porchetta` completions, hover/signature info, and no `undefined-global` diagnostic without Porchetta-specific editor setup.
+
+For other editors, or for manifests edited outside `porchetta manifest edit`, use the same official stub at `contrib/luals/porchetta.lua` and add it to your LuaLS workspace library. A minimal `.luarc.json` looks like:
+
+```json
+{
+  "runtime": { "version": "Lua 5.4" },
+  "workspace": {
+    "library": ["/path/to/porchetta/contrib/luals"],
+    "checkThirdParty": false
+  }
+}
+```
+
 ## Commands
 
 | Command | Description |

@@ -140,6 +140,45 @@ enum MigrateCommand {
     },
 }
 
+const PORCHETTA_LUALS_STUB: &str = include_str!("../contrib/luals/porchetta.lua");
+
+const MANIFEST_LUALS_CONFIG: &str = r#"{
+  "runtime": { "version": "Lua 5.4" },
+  "workspace": {
+    "library": [".lua-defs"],
+    "checkThirdParty": false
+  }
+}
+"#;
+
+fn edit_manifest_with_workspace(editor: &str, content: &[u8]) -> Result<Vec<u8>> {
+    let workspace = tempfile::Builder::new()
+        .prefix("porchetta-manifest-edit-")
+        .tempdir()
+        .context("Failed to create manifest edit workspace")?;
+    let workspace_path = workspace.path();
+    let defs_dir = workspace_path.join(".lua-defs");
+
+    std::fs::create_dir(&defs_dir).context("Failed to create LuaLS definitions directory")?;
+    std::fs::write(workspace_path.join("manifest.lua"), content)
+        .context("Failed to write manifest to edit workspace")?;
+    std::fs::write(workspace_path.join(".luarc.json"), MANIFEST_LUALS_CONFIG)
+        .context("Failed to write LuaLS workspace config")?;
+    std::fs::write(defs_dir.join("porchetta.lua"), PORCHETTA_LUALS_STUB)
+        .context("Failed to write Porchetta LuaLS definitions")?;
+
+    let status = std::process::Command::new(editor)
+        .current_dir(workspace_path)
+        .arg("manifest.lua")
+        .status()
+        .context("Failed to launch editor")?;
+    if !status.success() {
+        anyhow::bail!("Editor exited with non-zero status");
+    }
+
+    std::fs::read(workspace_path.join("manifest.lua")).context("Failed to read edited manifest")
+}
+
 fn init_logging(_quiet: bool) -> Result<()> {
     let log_dir = dirs::data_local_dir()
         .context("Could not determine local data directory")?
@@ -186,23 +225,7 @@ fn main() -> Result<()> {
             let editor = porchetta::util::get_editor().context("Failed to determine editor")?;
 
             engine
-                .edit_manifest(|content| -> Result<Vec<u8>> {
-                    let mut temp_file = tempfile::Builder::new()
-                        .prefix("porchetta_manifest")
-                        .suffix(".lua")
-                        .tempfile()
-                        .context("Failed to create temp file")?;
-                    std::io::Write::write_all(&mut temp_file, content)
-                        .context("Failed to write manifest to temp file")?;
-                    let status = std::process::Command::new(&editor)
-                        .arg(temp_file.path())
-                        .status()
-                        .context("Failed to launch editor")?;
-                    if !status.success() {
-                        anyhow::bail!("Editor exited with non-zero status");
-                    }
-                    std::fs::read(temp_file.path()).context("Failed to read edited manifest")
-                })
+                .edit_manifest(|content| edit_manifest_with_workspace(&editor, content))
                 .context("Failed to edit manifest")?;
             ui::success("Manifest updated");
         }
