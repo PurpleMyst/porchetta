@@ -140,7 +140,7 @@ enum MigrateCommand {
     },
 }
 
-const PORCHETTA_LUALS_STUB: &str = include_str!("../contrib/luals/porchetta.lua");
+const PORCHETTA_LUALS_STUB: &str = include_str!("luals/porchetta.lua");
 
 const MANIFEST_LUALS_CONFIG: &str = r#"{
   "runtime": { "version": "Lua 5.4" },
