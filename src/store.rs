@@ -93,7 +93,7 @@ impl PorchettaStore {
     pub fn porchetta_signature() -> gix::actor::Signature {
         gix::actor::Signature {
             name: "Porchetta".into(),
-            email: "".into(),
+            email: "porchetta@purplemyst.party".into(),
             time: gix::date::Time::now_utc(),
         }
     }
