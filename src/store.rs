@@ -88,7 +88,7 @@ impl Branch {
 }
 
 impl PorchettaStore {
-    /// Returns the standard Porchetta commit signature.
+    /// Returns the standard Porchetta tool signature (used as committer).
     #[must_use]
     pub fn porchetta_signature() -> gix::actor::Signature {
         gix::actor::Signature {
@@ -96,6 +96,17 @@ impl PorchettaStore {
             email: "".into(),
             time: gix::date::Time::now_utc(),
         }
+    }
+
+    /// Returns the author signature by reading `user.name` / `user.email`
+    /// (or `author.name` / `author.email`) from the repository's git config.
+    /// Falls back to [`Self::porchetta_signature`] when no identity is configured.
+    #[must_use]
+    pub fn author_signature(&self) -> gix::actor::Signature {
+        self.repo
+            .author()
+            .and_then(Result::ok)
+            .map_or_else(Self::porchetta_signature, gix::actor::Signature::from)
     }
     /// Returns the underlying git repository for git-level operations
     /// (object access, tree editing, merges).
@@ -418,7 +429,7 @@ impl PorchettaStore {
             tree: tree_oid.into(),
             parents: parents.into_iter().collect(),
             message: message.into(),
-            author: Self::porchetta_signature(),
+            author: self.author_signature(),
             committer: Self::porchetta_signature(),
             encoding: None,
             extra_headers: vec![],

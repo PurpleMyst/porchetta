@@ -189,12 +189,19 @@ impl PorchettaEngine {
                 .with_context(|| format!("Failed to fetch remote '{}'", remote.name()))?;
         }
 
+        let hostname = ::hostname::get()
+            .context("Could not get hostname")?
+            .to_string_lossy()
+            .into_owned();
+        debug!("Detected hostname: {hostname}");
+
         let local_manifest = self.store.head(&Branch::Manifest)?;
         let remote_manifest_heads = self.remote_heads(&remotes, &Branch::Manifest)?;
         let manifest_head = match self.reconcile_head(
             "manifest",
             local_manifest,
             remote_manifest_heads,
+            &hostname,
             dry_run,
         )? {
             Reconciled::Head(head) => head,
@@ -215,6 +222,7 @@ impl PorchettaEngine {
                 &format!("topic/{}", topic.name),
                 local_topic_head,
                 remote_heads,
+                &hostname,
                 dry_run,
             )?;
             reconciled_topics.insert(topic.name.clone(), state);
@@ -229,12 +237,6 @@ impl PorchettaEngine {
             }
             self.store.update_heads(&updates)?;
         }
-
-        let hostname = ::hostname::get()
-            .context("Could not get hostname")?
-            .to_string_lossy()
-            .into_owned();
-        debug!("Detected hostname: {hostname}");
 
         let enabled_topics: Vec<_> = manifest
             .topics
@@ -419,8 +421,12 @@ impl PorchettaEngine {
             ui::bullet(&format!("  repo: would update topic tree to {merged}"));
             return Ok(());
         }
-        self.store
-            .commit_topic_tree(name, hostname, merged, format!("Sync topic '{name}'"))?;
+        self.store.commit_topic_tree(
+            name,
+            hostname,
+            merged,
+            format!("Sync topic '{name}' from '{hostname}'"),
+        )?;
         Ok(())
     }
 
@@ -517,6 +523,7 @@ impl PorchettaEngine {
         name: &str,
         local: Option<gix::ObjectId>,
         remote_heads: Vec<gix::ObjectId>,
+        hostname: &str,
         dry_run: bool,
     ) -> Result<Reconciled> {
         // A head that is an ancestor of another head is already contained in it.
@@ -564,9 +571,11 @@ impl PorchettaEngine {
                 )?;
             }
             let tree = outcome.tree.write()?;
-            integrated =
-                self.store
-                    .commit_tree(tree, [integrated, theirs], format!("Reconcile {name}"))?;
+            integrated = self.store.commit_tree(
+                tree,
+                [integrated, theirs],
+                format!("Reconcile {name} on '{hostname}'"),
+            )?;
         }
         Ok(Reconciled::Head(integrated))
     }
