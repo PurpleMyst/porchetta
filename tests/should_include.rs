@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use porchetta::engine::PorchettaEngine;
-use porchetta::store::PorchettaStore;
+use porchetta::store::{Branch, PorchettaStore};
 
 #[test]
 fn test_should_include_filters_files() {
@@ -34,12 +34,17 @@ fn test_should_include_filters_files() {
     );
     engine.sync(false, true).unwrap();
 
-    let store = PorchettaStore::load_at(&store_path).unwrap();
+    let store = engine.store();
     let head = store
-        .get_topic_head("test")
+        .head(&Branch::topic("test"))
         .unwrap()
         .expect("topic head should exist");
-    let tree = store.find_object(head).unwrap().peel_to_tree().unwrap();
+    let tree = store
+        .repo()
+        .find_object(head)
+        .unwrap()
+        .peel_to_tree()
+        .unwrap();
 
     assert!(
         tree.find_entry("config.txt").is_some(),
@@ -87,12 +92,17 @@ fn test_should_include_filters_directory_recursion() {
     );
     engine.sync(false, true).unwrap();
 
-    let store = PorchettaStore::load_at(&store_path).unwrap();
+    let store = engine.store();
     let head = store
-        .get_topic_head("test")
+        .head(&Branch::topic("test"))
         .unwrap()
         .expect("topic head should exist");
-    let tree = store.find_object(head).unwrap().peel_to_tree().unwrap();
+    let tree = store
+        .repo()
+        .find_object(head)
+        .unwrap()
+        .peel_to_tree()
+        .unwrap();
 
     assert!(
         tree.find_entry("config.txt").is_some(),
@@ -140,8 +150,18 @@ fn test_sync_skips_disabled_topics() {
         porchetta::engine::resolver::PanickingResolver,
     );
     engine.sync(false, true).unwrap();
-
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    assert!(store.get_topic_head("enabled").unwrap().is_some());
-    assert!(store.get_topic_head("disabled").unwrap().is_none());
+    assert!(
+        engine
+            .store()
+            .head(&Branch::topic("enabled"))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        engine
+            .store()
+            .head(&Branch::topic("disabled"))
+            .unwrap()
+            .is_none()
+    );
 }

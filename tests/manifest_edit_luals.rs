@@ -16,6 +16,7 @@ fn which_in_path(program: &str) -> Option<String> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn manifest_edit_workspace_supports_luals_in_neovim() {
     if !cfg!(unix) {
         eprintln!("skipping: test editor script requires Unix");
@@ -52,8 +53,7 @@ fn manifest_edit_workspace_supports_luals_in_neovim() {
 
     std::fs::write(
         &nvim_lua,
-        format!(
-            r#"
+        r"
 local manifest = vim.fn.fnamemodify(vim.env.MANIFEST, ':p')
 local workspace = vim.fn.fnamemodify(manifest, ':h')
 local lua_ls = vim.env.LUA_LANGUAGE_SERVER
@@ -71,23 +71,23 @@ assert_file(workspace .. '/.lua-defs/porchetta.lua')
 vim.cmd('cd ' .. vim.fn.fnameescape(workspace))
 vim.cmd('edit manifest.lua')
 
-local root = vim.fs.root(0, {{ '.luarc.json', '.git' }}) or vim.uv.cwd()
+local root = vim.fs.root(0, { '.luarc.json', '.git' }) or vim.uv.cwd()
 if root ~= workspace then
   error('unexpected LuaLS root: ' .. tostring(root) .. ', expected: ' .. workspace)
 end
 
-local client_id = vim.lsp.start({{
+local client_id = vim.lsp.start({
   name = 'porchetta_luals_e2e',
-  cmd = {{ lua_ls }},
+  cmd = { lua_ls },
   root_dir = root,
-  settings = {{}},
-}})
+  settings = {},
+})
 if not client_id then
   error('failed to start lua-language-server')
 end
 
 local attached = vim.wait(5000, function()
-  return #vim.lsp.get_clients({{ bufnr = 0, name = 'porchetta_luals_e2e' }}) > 0
+  return #vim.lsp.get_clients({ bufnr = 0, name = 'porchetta_luals_e2e' }) > 0
 end)
 if not attached then
   error('lua-language-server did not attach')
@@ -117,7 +117,7 @@ local function request(method, params)
 end
 
 local hover_params = vim.lsp.util.make_position_params(0, 'utf-8')
-hover_params.position = {{ line = 0, character = 14 }}
+hover_params.position = { line = 0, character = 14 }
 local hover = request('textDocument/hover', hover_params)
 local hover_text = vim.inspect(hover)
 if not hover_text:match('Porchetta') then
@@ -125,22 +125,21 @@ if not hover_text:match('Porchetta') then
 end
 
 local completion_params = vim.lsp.util.make_position_params(0, 'utf-8')
-completion_params.position = {{ line = 2, character = 28 }}
-completion_params.context = {{ triggerKind = 1 }}
+completion_params.position = { line = 2, character = 28 }
+completion_params.context = { triggerKind = 1 }
 local completion = request('textDocument/completion', completion_params)
-local labels = {{}}
+local labels = {}
 for _, item in ipairs(completion.items or completion) do
   labels[item.label] = true
 end
-for _, label in ipairs({{ 'decode(content)', 'encode(value)', 'encode_pretty(value)', 'null' }}) do
+for _, label in ipairs({ 'decode(content)', 'encode(value)', 'encode_pretty(value)', 'null' }) do
   if not labels[label] then
     error('missing completion ' .. label .. ': ' .. vim.inspect(labels))
   end
 end
 
 vim.cmd('qa!')
-"#,
-        ),
+",
     )
     .unwrap();
 

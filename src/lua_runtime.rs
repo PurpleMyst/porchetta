@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_system_empty_args() {
         let lua = lua_with_porchetta();
-        let result: mlua::Result<String> = lua.load(r#"porchetta.system({})"#).eval();
+        let result: mlua::Result<String> = lua.load(r"porchetta.system({})").eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("args table must not be empty"));
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_hostname() {
         let lua = lua_with_porchetta();
-        let result: String = lua.load(r#"porchetta.hostname()"#).eval().unwrap();
+        let result: String = lua.load(r"porchetta.hostname()").eval().unwrap();
         assert!(!result.is_empty());
     }
 }

@@ -29,7 +29,6 @@ impl ConflictResolver for InteractiveResolver {
 
     fn choose_entry_kind(
         &self,
-        _prompt: &str,
         ours: gix::objs::tree::EntryKind,
         theirs: gix::objs::tree::EntryKind,
     ) -> anyhow::Result<gix::objs::tree::EntryKind> {
@@ -112,10 +111,33 @@ enum Command {
         /// URL of the remote Porchetta store
         url: String,
     },
+    /// Manage store remotes
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
     /// Migrate configuration from another dotfile manager
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum RemoteCommand {
+    /// Add a remote
+    Add {
+        /// Name for the remote
+        name: String,
+        /// URL of the remote Porchetta store
+        url: String,
+    },
+    /// List configured remotes
+    List,
+    /// Remove a remote
+    Remove {
+        /// Name of the remote to remove
+        name: String,
     },
 }
 
@@ -195,6 +217,30 @@ fn init_logging(_quiet: bool) -> Result<()> {
     Ok(())
 }
 
+fn handle_remote(command: RemoteCommand) -> Result<()> {
+    let store = PorchettaStore::load().context("Failed to load store")?;
+    match command {
+        RemoteCommand::Add { name, url } => {
+            store
+                .add_remote(&name, &url)
+                .with_context(|| format!("Failed to add remote '{name}'"))?;
+            ui::success(&format!("Added remote '{name}'"));
+        }
+        RemoteCommand::List => {
+            for remote in store.remotes().context("Failed to list remotes")? {
+                ui::bullet(&format!("{}: {}", remote.name(), remote.url()));
+            }
+        }
+        RemoteCommand::Remove { name } => {
+            store
+                .remove_remote(&name)
+                .with_context(|| format!("Failed to remove remote '{name}'"))?;
+            ui::success(&format!("Removed remote '{name}'"));
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -245,15 +291,11 @@ fn main() -> Result<()> {
                 ui::success("All topics synchronized");
             }
         }
+        Command::Remote { command } => handle_remote(command)?,
+
         Command::Clone { url } => {
             let store_path =
                 PorchettaStore::store_path().context("Failed to determine store path")?;
-            if store_path.exists() {
-                anyhow::bail!(
-                    "Porchetta store already exists at {store_path}\n\
-                     Remove it first or run `porchetta init` if this is a new machine."
-                );
-            }
             let _store = PorchettaStore::clone_from(&url, &store_path)
                 .with_context(|| format!("Failed to clone from {url}"))?;
             ui::success("Cloned Porchetta store");
@@ -307,11 +349,53 @@ mod tests {
 
     #[test]
     fn rejects_top_level_edit_command() {
-        let err = match Cli::try_parse_from(["porchetta", "edit"]) {
-            Ok(_) => panic!("top-level edit command should be rejected"),
-            Err(err) => err,
+        let Err(err) = Cli::try_parse_from(["porchetta", "edit"]) else {
+            panic!("top-level edit command should be rejected")
         };
 
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn parses_remote_add_command() {
+        let cli = Cli::try_parse_from([
+            "porchetta",
+            "remote",
+            "add",
+            "backup",
+            "https://example.com/store.git",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Remote {
+                command: RemoteCommand::Add { name, url }
+            } if name == "backup" && url == "https://example.com/store.git"
+        ));
+    }
+
+    #[test]
+    fn parses_remote_list_command() {
+        let cli = Cli::try_parse_from(["porchetta", "remote", "list"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Remote {
+                command: RemoteCommand::List
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_remote_remove_command() {
+        let cli = Cli::try_parse_from(["porchetta", "remote", "remove", "backup"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Remote {
+                command: RemoteCommand::Remove { name }
+            } if name == "backup"
+        ));
     }
 }

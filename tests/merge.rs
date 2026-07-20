@@ -8,8 +8,17 @@ use camino::Utf8PathBuf;
 use gix::bstr::ByteSlice;
 use porchetta::engine::PorchettaEngine;
 use porchetta::engine::resolver::ConflictResolver;
-use porchetta::store::PorchettaStore;
-use std::sync::{Arc, Mutex};
+use porchetta::store::{Branch, PorchettaStore};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+// Git subprocesses can briefly inherit lock descriptors from other test threads before exec.
+static MERGE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn merge_test_guard() -> MutexGuard<'static, ()> {
+    MERGE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 struct PassthroughBlobResolver {
     edited_path: Option<Arc<Mutex<Option<String>>>>,
@@ -30,7 +39,6 @@ impl ConflictResolver for PassthroughBlobResolver {
 
     fn choose_entry_kind(
         &self,
-        _prompt: &str,
         ours: gix::objs::tree::EntryKind,
         _theirs: gix::objs::tree::EntryKind,
     ) -> anyhow::Result<gix::objs::tree::EntryKind> {
@@ -60,7 +68,6 @@ impl ConflictResolver for RecordingTreeResolver {
 
     fn choose_entry_kind(
         &self,
-        _prompt: &str,
         ours: gix::objs::tree::EntryKind,
         _theirs: gix::objs::tree::EntryKind,
     ) -> anyhow::Result<gix::objs::tree::EntryKind> {
@@ -111,6 +118,35 @@ fn assert_file_conflict_eq(path: &camino::Utf8Path, expected: &str) {
     assert_eq!(normalize_conflict_labels(&actual), expected);
 }
 
+/// Commits a change to the `test` topic branch as if it came from another
+/// machine: `content` replaces `file`, or removes it when `None`.
+fn commit_remote_change(store: &PorchettaStore, file: &str, content: Option<&str>) {
+    let head = store.head(&Branch::topic("test")).unwrap().unwrap();
+    let tree_id = store
+        .repo()
+        .find_object(head)
+        .unwrap()
+        .peel_to_tree()
+        .unwrap()
+        .id();
+    let mut editor = store.repo().edit_tree(tree_id).unwrap();
+    match content {
+        Some(content) => {
+            let blob = store.repo().write_blob(content).unwrap();
+            editor
+                .upsert(file, gix::objs::tree::EntryKind::Blob, blob)
+                .unwrap();
+        }
+        None => {
+            editor.remove(file).unwrap();
+        }
+    }
+    let tree = editor.write().unwrap();
+    store
+        .commit_topic_tree("test", "bogus", tree, "remote change")
+        .unwrap();
+}
+
 // =============================================================================
 // Tests for minimal conflict markers
 // =============================================================================
@@ -119,6 +155,7 @@ fn assert_file_conflict_eq(path: &camino::Utf8Path, expected: &str) {
 /// are produced. This is the common case where auto-merge succeeds.
 #[test]
 fn test_non_overlapping_changes_no_conflicts() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -151,29 +188,13 @@ fn test_non_overlapping_changes_no_conflicts() {
     std::fs::write(topic_dir.join("config.txt"), "local-line1\nline2\nline3\n").unwrap();
 
     // Modify remote: change line 3 (non-overlapping with local changes)
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
-    let new_blob = store.write_blob("line1\nline2\nremote-line3\n").unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
-        .unwrap();
-    let new_tree_id = tree_editor.write().unwrap();
-
-    store
-        .commit_topic_tree("test", "bogus", new_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(
+        engine.store(),
+        "config.txt",
+        Some("line1\nline2\nremote-line3\n"),
+    );
 
     // Sync local - should auto-merge without conflicts
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
     let result = engine.sync(false, false);
 
     // Sync should succeed without conflicts
@@ -194,6 +215,7 @@ fn test_non_overlapping_changes_no_conflicts() {
 /// no conflict markers are produced (auto-merge succeeds).
 #[test]
 fn test_identical_changes_no_conflicts() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -226,29 +248,13 @@ fn test_identical_changes_no_conflicts() {
     std::fs::write(topic_dir.join("config.txt"), "line1\nchanged\nline3\n").unwrap();
 
     // Modify remote with SAME change
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
-    let new_blob = store.write_blob("line1\nchanged\nline3\n").unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
-        .unwrap();
-    let new_tree_id = tree_editor.write().unwrap();
-
-    store
-        .commit_topic_tree("test", "bogus", new_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(
+        engine.store(),
+        "config.txt",
+        Some("line1\nchanged\nline3\n"),
+    );
 
     // Sync local - should auto-merge
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
     let result = engine.sync(false, false);
 
     assert!(result.is_ok(), "identical changes should auto-merge");
@@ -260,6 +266,7 @@ fn test_identical_changes_no_conflicts() {
 /// only the conflicted region is marked, not the entire file.
 #[test]
 fn test_conflict_markers_are_minimal() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -301,23 +308,12 @@ fn test_conflict_markers_are_minimal() {
     .unwrap();
 
     // Remote changes the SAME region (header) differently
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
-    let new_blob = store
-        .write_blob("remote header\ncommon line\nfooter line\n")
-        .unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
-        .unwrap();
-    let new_tree_id = tree_editor.write().unwrap();
-
-    store
-        .commit_topic_tree("test", "bogus", new_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(
+        engine.store(),
+        "config.txt",
+        Some("remote header\ncommon line\nfooter line\n"),
+    );
+    drop(engine);
 
     let resolver = PassthroughBlobResolver { edited_path: None };
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -334,6 +330,7 @@ fn test_conflict_markers_are_minimal() {
 /// Verify a large conflict marks only the changed middle block, not surrounding lines.
 #[test]
 fn test_large_file_conflict_markers_surround_only_conflicted_region() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -353,7 +350,7 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
     std::fs::create_dir_all(&topic_dir).unwrap();
 
     // Base with many lines
-    let base_lines: Vec<String> = (1..=50).map(|i| format!("line{}", i)).collect();
+    let base_lines: Vec<String> = (1..=50).map(|i| format!("line{i}")).collect();
     let base = base_lines.join("\n") + "\n";
     std::fs::write(topic_dir.join("config.txt"), &base).unwrap();
 
@@ -367,33 +364,19 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
     // Local changes lines 25-30 (the middle)
     let mut local_lines = base_lines.clone();
     for i in 25..=30 {
-        local_lines[i - 1] = format!("local{}", i);
+        local_lines[i - 1] = format!("local{i}");
     }
     let local = local_lines.join("\n") + "\n";
     std::fs::write(topic_dir.join("config.txt"), &local).unwrap();
 
     // Set up remote change
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
     let mut remote_lines = base_lines.clone();
     for i in 25..=30 {
-        remote_lines[i - 1] = format!("remote{}", i);
+        remote_lines[i - 1] = format!("remote{i}");
     }
     let remote = remote_lines.join("\n") + "\n";
-
-    let new_blob = store.write_blob(&remote).unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
-        .unwrap();
-    let new_tree_id = tree_editor.write().unwrap();
-
-    store
-        .commit_topic_tree("test", "bogus", new_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(engine.store(), "config.txt", Some(&remote));
+    drop(engine);
 
     let resolver = PassthroughBlobResolver { edited_path: None };
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -403,19 +386,38 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
 
     let expected = format!(
         "{}<<<<<<<\n{}|||||||\n{}=======\n{}>>>>>>>\n{}",
-        (1..=24).map(|i| format!("line{i}\n")).collect::<String>(),
-        (25..=30).map(|i| format!("local{i}\n")).collect::<String>(),
-        (25..=30).map(|i| format!("line{i}\n")).collect::<String>(),
-        (25..=30)
-            .map(|i| format!("remote{i}\n"))
-            .collect::<String>(),
-        (31..=50).map(|i| format!("line{i}\n")).collect::<String>(),
+        (1..=24).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "line{i}").unwrap();
+            s
+        }),
+        (25..=30).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "local{i}").unwrap();
+            s
+        }),
+        (25..=30).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "line{i}").unwrap();
+            s
+        }),
+        (25..=30).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "remote{i}").unwrap();
+            s
+        }),
+        (31..=50).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "line{i}").unwrap();
+            s
+        }),
     );
     assert_file_conflict_eq(&topic_dir.join("config.txt"), &expected);
 }
 
 #[test]
 fn test_partial_line_conflict_markers_minimal() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -450,22 +452,12 @@ fn test_partial_line_conflict_markers_minimal() {
     std::fs::write(topic_dir.join("config.txt"), local).unwrap();
 
     // Remote only changes "alpha" (subset conflict)
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
-    let remote = "REMOTE\nbeta\ncharlie\ndelta\nepsilon\n";
-    let new_blob = store.write_blob(remote).unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
-        .unwrap();
-    let new_tree_id = tree_editor.write().unwrap();
-
-    store
-        .commit_topic_tree("test", "bogus", new_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(
+        engine.store(),
+        "config.txt",
+        Some("REMOTE\nbeta\ncharlie\ndelta\nepsilon\n"),
+    );
+    drop(engine);
 
     let resolver = PassthroughBlobResolver { edited_path: None };
     let store = PorchettaStore::load_at(&store_path).unwrap();
@@ -481,6 +473,7 @@ fn test_partial_line_conflict_markers_minimal() {
 
 #[test]
 fn test_blob_conflict_passes_path_to_resolver() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -509,24 +502,12 @@ fn test_blob_conflict_passes_path_to_resolver() {
 
     std::fs::write(topic_dir.join("subdir/config.lua"), "value = 'local'\n").unwrap();
 
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-
-    let remote_blob = store.write_blob("value = 'remote'\n").unwrap();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-    tree_editor
-        .upsert(
-            "subdir/config.lua",
-            gix::objs::tree::EntryKind::Blob,
-            remote_blob,
-        )
-        .unwrap();
-    let remote_tree_id = tree_editor.write().unwrap();
-    store
-        .commit_topic_tree("test", "bogus", remote_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(
+        engine.store(),
+        "subdir/config.lua",
+        Some("value = 'remote'\n"),
+    );
+    drop(engine);
 
     let edited_path = Arc::new(Mutex::new(None));
     let resolver = PassthroughBlobResolver {
@@ -570,23 +551,13 @@ fn setup_modify_delete_conflict(home: &Utf8PathBuf, store_path: &Utf8PathBuf) {
     );
     engine.sync(false, true).unwrap();
 
-    let store = PorchettaStore::load_at(store_path).unwrap();
-    let old_head = store.get_topic_head("test").unwrap().unwrap();
-    let old_tree = store.find_object(old_head).unwrap().peel_to_tree().unwrap();
-    let old_tree_id = old_tree.id();
-    let mut tree_editor = store.edit_tree(old_tree_id).unwrap();
-
     std::fs::write(topic_dir.join("config.txt"), "local\n").unwrap();
-    tree_editor.remove("config.txt").unwrap();
-
-    let remote_tree_id = tree_editor.write().unwrap();
-    store
-        .commit_topic_tree("test", "bogus", remote_tree_id, "remote change")
-        .unwrap();
+    commit_remote_change(engine.store(), "config.txt", None);
 }
 
 #[test]
 fn test_modify_delete_tree_conflict_keep_local_modification() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -614,6 +585,7 @@ fn test_modify_delete_tree_conflict_keep_local_modification() {
 
 #[test]
 fn test_modify_delete_tree_conflict_keep_remote_deletion() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
@@ -638,6 +610,7 @@ fn test_modify_delete_tree_conflict_keep_remote_deletion() {
 
 #[test]
 fn test_tree_conflict_abort_returns_error() {
+    let _guard = merge_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();

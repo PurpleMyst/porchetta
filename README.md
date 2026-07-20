@@ -33,6 +33,8 @@ cargo install --locked --path .
 Either way, `--locked` ensures you get the exact dependency versions that were used for testing.
 Porchetta stores its bare Git repository at `~/.porchetta`.
 
+Porchetta permits one active process for each local store. A second process stops before it accesses the store. Direct Git or filesystem changes during a Porchetta operation are not supported.
+
 ## Quick Start
 
 ```bash
@@ -136,10 +138,13 @@ For other editors, or for manifests edited outside `porchetta manifest edit`, us
 | `porchetta init` | Create a new store at `~/.porchetta`. |
 | `porchetta manifest edit` | Open `manifest.lua` in `$EDITOR`. |
 | `porchetta manifest view` | Print the current manifest to stdout. |
-| `porchetta sync` | Synchronize all topics. |
+| `porchetta sync` | Synchronize all topics and publish them to every configured remote. |
 | `porchetta sync --dry-run` | Preview what would change without applying. |
-| `porchetta sync --offline` | Sync without fetching from or pushing to `origin`. |
+| `porchetta sync --offline` | Synchronize locally without fetching from or pushing to any remote. |
 | `porchetta clone <url>` | Clone a remote store. Run `sync` next. |
+| `porchetta remote add <name> <url>` | Add a named remote. |
+| `porchetta remote list` | List configured remotes. |
+| `porchetta remote remove <name>` | Remove a named remote. |
 | `porchetta migrate chezmoi` | Import topics from a chezmoi source directory. Use `--source-dir <dir>` to override the default and `--yes` to skip the overwrite prompt. |
 
 ## Workflow Examples
@@ -175,19 +180,45 @@ porchetta migrate chezmoi --source-dir ~/.local/share/chezmoi
 porchetta sync
 ```
 
+## Remotes
+
+> **Note:** Remotes are symmetric: there is no special `origin`. Add each publication target explicitly, for example:
+
+```bash
+porchetta remote add github git@github.com:you/dotfiles.git
+porchetta remote add backup ssh://backup.example/you/dotfiles.git
+porchetta remote list
+```
+
+Remove a remote with `porchetta remote remove <name>`. A normal sync fetches every configured remote. If any fetch fails, sync aborts before it captures, merges, or applies local filesystem changes.
+
+After local synchronization succeeds, Porchetta attempts to push to every configured remote. Pushes are best-effort: a failure publishing to one remote does not prevent attempts to publish to the others. If any push fails, sync reports a publication error after all pushes have been attempted; local filesystem changes and local store commits remain complete and can be published by a later sync.
+
 ## How Sync Works
 
-For each topic, Porchetta builds three trees:
+Before synchronizing the filesystem, Porchetta reconciles remote history. After fetching all remotes, it reconciles the fetched commits with the local topic and manifest histories. This commit reconciliation is separate from the filesystem merge below.
+
+For each topic, Porchetta then builds three trees using an explicit base:
 
 - **Base** — the last state applied to this hostname (`system/<hostname>/<topic>`).
 - **Ours** — the current state of the topic's paths on the local filesystem.
-- **Theirs** — the stored state of the topic (`topic/<topic>`).
+- **Theirs** — the reconciled stored state of the topic (`topic/<topic>`).
 
 It performs a three-way merge of these trees. The result is:
 
 - **Captured** to the topic branch if it differs from `theirs`.
 - **Applied** to the filesystem if it differs from `ours`.
 - **Recorded** as the new base for this hostname.
+
+With `sync --offline`, Porchetta skips fetching, remote-history reconciliation, and publishing, but still performs this local filesystem synchronization using the local store state.
+
+### Dry-run guarantees
+
+`sync --dry-run` does not move Porchetta's canonical `manifest` or `topic/*` refs, update local `system/*` refs, modify managed filesystem contents, publish remote refs, or change repository configuration. An online dry run still fetches remotes, so remote-tracking refs may be refreshed.
+
+Dry-run modeling may write unreachable Git blobs, trees, and commits while snapshotting files or reconciling divergent histories. These objects do not affect observable synchronized state and can be reclaimed by normal Git garbage collection.
+
+A topic whose histories conflict during reconciliation is reported as a conflict, just like a filesystem merge conflict, and the dry run continues with the remaining topics. A conflicting manifest history still requires an interactive `porchetta sync`, because the manifest defines the topic set.
 
 ### Conflict Resolution
 
@@ -202,6 +233,6 @@ The store at `~/.porchetta` is a bare Git repository with these branches:
 
 - `manifest` — the `manifest.lua` file.
 - `topic/<name>` — the latest committed state of each topic.
-- `system/<hostname>/<name>` — the last state applied to each machine.
+- `system/<hostname>/<name>` — the last state applied to each machine. These local bookkeeping branches are never transferred to remotes.
 
 Because topics live on independent branches, you can sync them individually and never deal with merge conflicts across unrelated configs.

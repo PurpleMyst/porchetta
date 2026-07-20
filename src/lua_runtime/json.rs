@@ -100,7 +100,7 @@ mod tests {
     fn test_decode_array() {
         let lua = lua_with_json();
         let result: i64 = lua
-            .load(r#"local v = porchetta.json.decode('[1,2,3]'); return v[2]"#)
+            .load(r"local v = porchetta.json.decode('[1,2,3]'); return v[2]")
             .eval()
             .unwrap();
         assert_eq!(result, 2);
@@ -128,7 +128,7 @@ mod tests {
     fn test_encode_pretty() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"return porchetta.json.encode_pretty({name = 'porchetta'})"#)
+            .load(r"return porchetta.json.encode_pretty({name = 'porchetta'})")
             .eval()
             .unwrap();
         assert!(result.contains('\n'));
@@ -158,7 +158,7 @@ mod tests {
     fn test_decoded_empty_array_round_trips_as_array() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"return porchetta.json.encode(porchetta.json.decode('[]'))"#)
+            .load(r"return porchetta.json.encode(porchetta.json.decode('[]'))")
             .eval()
             .unwrap();
         assert_eq!(result, "[]");
@@ -168,7 +168,7 @@ mod tests {
     fn test_decoded_empty_object_round_trips_as_object() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"return porchetta.json.encode(porchetta.json.decode('{}'))"#)
+            .load(r"return porchetta.json.encode(porchetta.json.decode('{}'))")
             .eval()
             .unwrap();
         assert_eq!(result, "{}");
@@ -195,11 +195,11 @@ mod tests {
         let lua = lua_with_json();
         let result: String = lua
             .load(
-                r#"
+                r"
                 local v = porchetta.json.decode('[1,2]')
                 v[3] = 3
                 return porchetta.json.encode(v)
-                "#,
+                ",
             )
             .eval()
             .unwrap();
@@ -210,7 +210,7 @@ mod tests {
     fn test_lua_created_empty_table_encodes_as_object() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"return porchetta.json.encode({})"#)
+            .load(r"return porchetta.json.encode({})")
             .eval()
             .unwrap();
         assert_eq!(result, "{}");
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn test_invalid_input_errors() {
         let lua = lua_with_json();
-        let result: mlua::Result<Value> = lua.load(r#"porchetta.json.decode('{')"#).eval();
+        let result: mlua::Result<Value> = lua.load(r"porchetta.json.decode('{')").eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("porchetta.json.decode"));
@@ -229,7 +229,7 @@ mod tests {
     fn test_unsupported_lua_value_errors() {
         let lua = lua_with_json();
         let result: mlua::Result<String> = lua
-            .load(r#"porchetta.json.encode({callback = function() end})"#)
+            .load(r"porchetta.json.encode({callback = function() end})")
             .eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

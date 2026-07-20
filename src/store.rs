@@ -1,12 +1,90 @@
+mod lock;
+mod remote;
+
+pub use remote::Remote;
+
+use lock::StoreLock;
+
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use dirs::home_dir;
-use gix::bstr::{BString, ByteSlice};
+use gix::bstr::ByteSlice;
 use log::{debug, info, trace};
+
+/// The entry holding the manifest in every manifest tree.
+const MANIFEST_FILE: &str = "manifest.lua";
 
 #[derive(Debug)]
 pub struct PorchettaStore {
+    _lock: StoreLock,
     repo: gix::Repository,
+}
+
+/// A Porchetta branch: the single owner of the store's ref naming layout.
+#[derive(Clone, Debug)]
+pub enum Branch {
+    Manifest,
+    Topic(String),
+    System { hostname: String, topic: String },
+}
+
+impl Branch {
+    /// Returns the branch shared for a topic.
+    pub fn topic(name: impl Into<String>) -> Self {
+        Self::Topic(name.into())
+    }
+
+    /// Returns the branch tracking a topic's state on a specific hostname.
+    pub fn system(hostname: impl Into<String>, topic: impl Into<String>) -> Self {
+        Self::System {
+            hostname: hostname.into(),
+            topic: topic.into(),
+        }
+    }
+
+    /// The branch portion of the ref name, e.g. `topic/shell`.
+    fn short_name(&self) -> String {
+        match self {
+            Self::Manifest => "manifest".to_owned(),
+            Self::Topic(topic) => format!("topic/{topic}"),
+            Self::System { hostname, topic } => format!("system/{hostname}/{topic}"),
+        }
+    }
+
+    /// The full local ref name, e.g. `refs/heads/topic/shell`.
+    fn ref_name(&self) -> String {
+        format!("refs/heads/{}", self.short_name())
+    }
+
+    /// The full name of this branch's tracking ref on `remote`, e.g.
+    /// `refs/remotes/origin/topic/shell`.
+    fn tracking_ref_name(&self, remote: &str) -> String {
+        format!("refs/remotes/{remote}/{}", self.short_name())
+    }
+
+    /// The fetch refspec mapping this branch into `remote`'s tracking namespace.
+    ///
+    /// `Branch::topic("*")` yields the wildcard refspec covering all topics.
+    fn fetch_refspec(&self, remote: &str) -> String {
+        format!("+{}:{}", self.ref_name(), self.tracking_ref_name(remote))
+    }
+
+    /// Parses a branch from its short name, the inverse of [`Branch::short_name`].
+    fn parse(short_name: &str) -> Option<Self> {
+        if short_name == "manifest" {
+            Some(Self::Manifest)
+        } else if let Some(topic) = short_name.strip_prefix("topic/") {
+            Some(Self::Topic(topic.to_owned()))
+        } else if let Some(rest) = short_name.strip_prefix("system/") {
+            let (hostname, topic) = rest.split_once('/')?;
+            Some(Self::System {
+                hostname: hostname.to_owned(),
+                topic: topic.to_owned(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl PorchettaStore {
@@ -19,80 +97,24 @@ impl PorchettaStore {
             time: gix::date::Time::now_utc(),
         }
     }
-
-    // -- thin wrappers over gix::Repository --
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn empty_tree_id(&self) -> gix::ObjectId {
-        self.repo.empty_tree().id().into()
+    /// Returns the underlying git repository for git-level operations
+    /// (object access, tree editing, merges).
+    #[must_use]
+    pub fn repo(&self) -> &gix::Repository {
+        &self.repo
     }
 
-    #[allow(clippy::missing_errors_doc)]
-    pub fn edit_tree(&self, id: impl Into<gix::ObjectId>) -> Result<gix::object::tree::Editor<'_>> {
-        Ok(self.repo.edit_tree(id)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn write_blob(&self, data: impl AsRef<[u8]>) -> Result<gix::Id<'_>> {
-        Ok(self.repo.write_blob(data)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn find_object(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Object<'_>> {
-        Ok(self.repo.find_object(id)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn find_blob(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Blob<'_>> {
-        Ok(self.repo.find_blob(id)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn find_tree(&self, id: impl Into<gix::ObjectId>) -> Result<gix::Tree<'_>> {
-        Ok(self.repo.find_tree(id)?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn merge_trees(
-        &self,
-        base: impl AsRef<gix::oid>,
-        ours: impl AsRef<gix::oid>,
-        theirs: impl AsRef<gix::oid>,
-        name: impl std::fmt::Display,
-    ) -> Result<gix::merge::tree::Outcome<'_>> {
-        Ok(self.repo.merge_trees(
-            base,
-            ours,
-            theirs,
-            gix::merge::blob::builtin_driver::text::Labels {
-                ancestor: Some(BString::from(format!("{name} (last applied)")).as_bstr()),
-                current: Some(BString::from(format!("{name} (on system)")).as_bstr()),
-                other: Some(BString::from(format!("{name} (in repo)")).as_bstr()),
-            },
-            self.repo.tree_merge_options()?,
-        )?)
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub fn write_object(&self, object: impl gix::objs::WriteTo) -> Result<gix::Id<'_>> {
-        Ok(self.repo.write_object(object)?)
-    }
-
-    /// Initializes a new Porchetta store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store path cannot be determined or if any git operation fails.
     /// Initializes a new Porchetta store at the given path.
     ///
     /// # Errors
     ///
-    /// Returns an error if the store cannot be initialized.
+    /// Returns an error if the store cannot be initialized or the manifest cannot be written.
     pub fn init_at(path: &Utf8Path) -> Result<Self> {
+        let lock = StoreLock::acquire(path)?;
         let repo = gix::init_bare(path)?;
         info!("Initialized Porchetta store at {path}");
         let manifest_content = b"return { topics = {} }\n";
-        let this = Self { repo };
+        let this = Self { repo, _lock: lock };
         this.write_manifest(manifest_content)?;
         Ok(this)
     }
@@ -112,32 +134,93 @@ impl PorchettaStore {
     ///
     /// Returns an error if the store cannot be opened.
     pub fn load_at(path: &Utf8Path) -> Result<Self> {
+        let lock = StoreLock::acquire(path)?;
         let repo = gix::open(path)?;
         info!("Loaded Porchetta store from {path}");
-        Ok(Self { repo })
+        Ok(Self { repo, _lock: lock })
     }
 
-    /// Clones a remote Porchetta store into the given path.
+    /// Clones the Porchetta refs from a remote into the given path.
+    ///
+    /// Only `manifest` and `topic/*` are fetched. The URL is retained as
+    /// `origin`, and the fetched refs are atomically bootstrapped as local heads.
     ///
     /// # Errors
     ///
-    /// Returns an error if `git` is not available, if the clone fails, or if the
-    /// resulting repository cannot be opened.
-    ///
-    /// # Implementation note
-    ///
-    /// We shell out to the `git` CLI rather than using `gix` directly so that
-    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
-    /// automatically.
+    /// Returns an error if the destination exists or any initialization, remote,
+    /// fetch, reference iteration, or reference update operation fails.
     pub fn clone_from(url: &str, path: &Utf8Path) -> Result<Self> {
-        let status = std::process::Command::new("git")
-            .args(["clone", "--bare", url, path.as_str()])
-            .status()
-            .context("Failed to run git clone")?;
-        if !status.success() {
-            bail!("git clone failed with non-zero exit code");
+        if path.exists() {
+            bail!(
+                "Porchetta store already exists at {path}\n\
+                 Remove it first or run `porchetta init` if this is a new machine."
+            );
         }
-        Self::load_at(path)
+        let lock = StoreLock::acquire(path)?;
+        let repo = match gix::init_bare(path) {
+            Ok(repo) => repo,
+            Err(error) => {
+                if path.exists() {
+                    std::fs::remove_dir_all(path).with_context(|| {
+                        format!("Failed to clean up incomplete clone destination '{path}'")
+                    })?;
+                }
+                return Err(error.into());
+            }
+        };
+        let this = Self { repo, _lock: lock };
+        let result = (|| {
+            let origin = this.add_remote("origin", url)?;
+            this.fetch(&origin)?;
+
+            let prefix = "refs/remotes/origin/";
+            let mut local_heads = Vec::new();
+            {
+                let reference_platform = this.repo.references()?;
+                let references = reference_platform.prefixed(prefix)?;
+                for reference in references {
+                    let reference =
+                        reference.map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    let reference_name = reference.name().as_bstr().to_str()?;
+                    let short_name = reference_name
+                        .strip_prefix(prefix)
+                        .context("Fetched reference is outside the origin namespace")?;
+                    // Only shared refs (manifest and topics) become local heads.
+                    let Some(branch) = Branch::parse(short_name)
+                        .filter(|branch| !matches!(branch, Branch::System { .. }))
+                    else {
+                        continue;
+                    };
+                    let oid = reference
+                        .target()
+                        .try_id()
+                        .context("Fetched reference does not point to an object id")?
+                        .to_owned();
+                    local_heads.push((branch, oid));
+                }
+            }
+
+            this.update_heads(&local_heads)
+        })();
+
+        match result {
+            Ok(()) => Ok(this),
+            Err(error) => {
+                // Drop the repository before deleting the directory: its open
+                // handles would otherwise prevent removal (notably on Windows).
+                // The lock file lives outside the store directory, so it
+                // survives the cleanup and is released last.
+                let Self { _lock: lock, repo } = this;
+                drop(repo);
+                if path.exists() {
+                    std::fs::remove_dir_all(path).with_context(|| {
+                        format!("Failed to clean up incomplete clone destination '{path}'")
+                    })?;
+                }
+                drop(lock);
+                Err(error)
+            }
+        }
     }
 
     /// Loads the Porchetta store from the default location.
@@ -171,24 +254,35 @@ impl PorchettaStore {
         Self::store_path_for(&home)
     }
 
-    /// Reads the manifest from the store.
+    /// Reads the manifest from the manifest branch head.
     ///
     /// # Errors
     ///
     /// Returns an error if the manifest reference cannot be found or read.
     pub fn read_manifest(&self) -> Result<Vec<u8>> {
-        debug!("Reading manifest from store");
+        let head = self
+            .head(&Branch::Manifest)?
+            .context("Manifest branch has no head")?;
+        self.read_manifest_at(head)
+    }
+
+    /// Reads the manifest stored in the tree of the given commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the commit cannot be peeled or has no manifest entry.
+    pub fn read_manifest_at(&self, head: gix::ObjectId) -> Result<Vec<u8>> {
+        debug!("Reading manifest at {head}");
         let content = self
             .repo
-            .find_reference("heads/manifest")?
+            .find_object(head)?
             .peel_to_tree()?
-            .find_entry("manifest.lua")
+            .find_entry(MANIFEST_FILE)
             .context("Manifest entry not found in tree")?
             .object()?
             .try_into_blob()?
             .take_data();
-        let len = content.len();
-        debug!("Successfully read manifest ({len} bytes)");
+        debug!("Successfully read manifest ({} bytes)", content.len());
         Ok(content)
     }
 
@@ -202,6 +296,7 @@ impl PorchettaStore {
             "Writing manifest to store ({} bytes)",
             manifest_content.len()
         );
+        let manifest_head = self.head(&Branch::Manifest)?;
         let blob_oid = self
             .repo
             .write_blob(manifest_content)
@@ -209,37 +304,29 @@ impl PorchettaStore {
         let tree_oid = self.repo.write_object(gix::objs::Tree {
             entries: vec![gix::objs::tree::Entry {
                 mode: gix::objs::tree::EntryKind::Blob.into(),
-                filename: b"manifest.lua".to_vec().into(),
+                filename: MANIFEST_FILE.into(),
                 oid: blob_oid.into(),
             }],
         })?;
-        let commit_oid = self.repo.write_object(gix::objs::Commit {
-            tree: tree_oid.into(),
-            parents: self
-                .repo
-                .try_find_reference("heads/manifest")?
-                .and_then(|r| r.target().try_id().map(|id| [id.to_owned()].into()))
-                .unwrap_or_default(),
-            author: Self::porchetta_signature(),
-            committer: Self::porchetta_signature(),
-            encoding: None,
-            message: "Update manifest".into(),
-            extra_headers: vec![],
-        })?;
-        self.repo.reference(
-            "refs/heads/manifest",
-            commit_oid,
-            gix::refs::transaction::PreviousValue::Any,
-            "Update manifest branch",
-        )?;
+        let commit_oid = self.commit_tree(tree_oid, manifest_head, "Update manifest")?;
+        self.update_heads(&[(Branch::Manifest, commit_oid)])?;
         info!("Manifest written successfully");
         Ok(())
     }
 
-    fn get_branch_head(&self, branch: &str) -> Result<Option<gix::ObjectId>> {
-        let reference_name = format!("refs/heads/{branch}");
-        trace!("Looking up branch head for '{reference_name}'");
-        match self.repo.find_reference(&reference_name) {
+    /// Gets the head commit for a local branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference cannot be read.
+    pub fn head(&self, branch: &Branch) -> Result<Option<gix::ObjectId>> {
+        self.ref_head(&branch.ref_name())
+    }
+
+    /// Gets the head commit for a full ref name, or `None` if it does not exist.
+    fn ref_head(&self, ref_name: &str) -> Result<Option<gix::ObjectId>> {
+        trace!("Looking up branch head for '{ref_name}'");
+        match self.repo.find_reference(ref_name) {
             Ok(reference) => Ok(Some(
                 reference
                     .target()
@@ -248,102 +335,54 @@ impl PorchettaStore {
                     .to_owned(),
             )),
             Err(gix::reference::find::existing::Error::NotFound { .. }) => {
-                debug!("Branch '{reference_name}' not found");
+                debug!("Branch '{ref_name}' not found");
                 Ok(None)
             }
             Err(e) => Err(e.into()),
         }
     }
 
-    fn fast_forward_branch(&self, branch: &str, remote_oid: gix::ObjectId) -> Result<()> {
-        let Some(local_oid) = self.get_branch_head(branch)? else {
-            self.update_branch_head(branch, remote_oid)?;
-            return Ok(());
-        };
+    /// Updates multiple local branch heads in one reference transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an update is duplicated or the transaction fails.
+    pub fn update_heads(&self, updates: &[(Branch, gix::ObjectId)]) -> Result<()> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut edits = Vec::with_capacity(updates.len());
 
-        if remote_oid == local_oid {
-            return Ok(());
+        for (branch, new_head) in updates {
+            let ref_name = branch.ref_name();
+            let full_name: gix::refs::FullName = ref_name
+                .clone()
+                .try_into()
+                .with_context(|| format!("Invalid branch name '{}'", branch.short_name()))?;
+            if !names.insert(ref_name) {
+                bail!("Duplicate branch update for '{}'", branch.short_name());
+            }
+
+            edits.push(gix::refs::transaction::RefEdit {
+                change: gix::refs::transaction::Change::Update {
+                    log: gix::refs::transaction::LogChange {
+                        mode: gix::refs::transaction::RefLog::AndReference,
+                        force_create_reflog: false,
+                        message: format!(
+                            "Update head of branch {} to {new_head}",
+                            branch.short_name()
+                        )
+                        .into(),
+                    },
+                    expected: gix::refs::transaction::PreviousValue::Any,
+                    new: gix::refs::Target::Object(*new_head),
+                },
+                name: full_name,
+                deref: false,
+            });
         }
 
-        if self.git_ancestor_check(remote_oid, local_oid)? {
-            // remote is ancestor of local, local is ahead
-            return Ok(());
+        if !edits.is_empty() {
+            self.repo.edit_references(edits)?;
         }
-
-        if self.git_ancestor_check(local_oid, remote_oid)? {
-            self.update_branch_head(branch, remote_oid)?;
-            return Ok(());
-        }
-
-        bail!(
-            "Cannot fast-forward branch '{branch}' from {local_oid} to {remote_oid} because they have diverged"
-        );
-    }
-
-    /// Fast-forwards the manifest branch to `remote_oid` if possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or updating the branch fails.
-    pub fn fast_forward_manifest(&self, remote_oid: gix::ObjectId) -> Result<()> {
-        self.fast_forward_branch("manifest", remote_oid)
-    }
-
-    /// Fast-forwards a topic branch to `remote_oid` if possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or updating the branch fails.
-    pub fn fast_forward_topic(&self, topic: &str, remote_oid: gix::ObjectId) -> Result<()> {
-        self.fast_forward_branch(&format!("topic/{topic}"), remote_oid)
-    }
-
-    /// Fast-forwards a topic/hostname branch to `remote_oid` if possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or updating the branch fails.
-    pub fn fast_forward_topic_hostname(
-        &self,
-        topic: &str,
-        hostname: &str,
-        remote_oid: gix::ObjectId,
-    ) -> Result<()> {
-        self.fast_forward_branch(&format!("system/{hostname}/{topic}"), remote_oid)
-    }
-
-    /// Gets the head commit for a topic.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the topic branch cannot be read.
-    pub fn get_topic_head(&self, topic: &str) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("topic/{topic}");
-        self.get_branch_head(&branch_name)
-    }
-
-    /// Gets the head commit for a topic on the current hostname.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the topic hostname branch cannot be read.
-    pub fn get_topic_hostname_head(
-        &self,
-        topic: &str,
-        hostname: &str,
-    ) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("system/{hostname}/{topic}");
-        self.get_branch_head(&branch_name)
-    }
-
-    fn update_branch_head(&self, branch: &str, new_head: gix::ObjectId) -> Result<()> {
-        let reference_name = format!("refs/heads/{branch}");
-        self.repo.reference(
-            reference_name.as_str(),
-            new_head,
-            gix::refs::transaction::PreviousValue::Any,
-            format!("Update head of branch {branch} to {new_head}"),
-        )?;
         Ok(())
     }
 
@@ -351,212 +390,40 @@ impl PorchettaStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the topic head cannot be read or the branch cannot be updated.
+    /// Returns an error if the topic branch cannot be read or the reference cannot be updated.
     pub fn update_topic_hostname_head(&self, topic: &str, hostname: &str) -> Result<()> {
         let topic_head = self
-            .get_topic_head(topic)?
+            .head(&Branch::topic(topic))?
             .context("Missing topic head for existing topic")?;
-        let branch_name = format!("system/{hostname}/{topic}");
         debug!("Updating topic hostname head for '{hostname}/{topic}' to {topic_head}");
-        self.update_branch_head(&branch_name, topic_head)
-    }
-
-    /// Gets the head commit for the manifest branch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest reference cannot be read.
-    pub fn get_manifest_head(&self) -> Result<Option<gix::ObjectId>> {
-        self.get_branch_head("manifest")
-    }
-
-    /// Updates the head commit for the manifest branch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest reference cannot be updated.
-    pub fn update_manifest_head(&self, new_head: gix::ObjectId) -> Result<()> {
-        self.update_branch_head("manifest", new_head)
-    }
-
-    /// Returns whether the store has a remote named `origin`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the repository configuration cannot be read.
-    pub fn has_origin(&self) -> Result<bool> {
-        Ok(self
-            .repo
-            .config_snapshot()
-            .string("remote.origin.url")
-            .is_some())
-    }
-
-    /// Runs `git fetch origin` in the store repository.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `git` binary is missing or the fetch fails.
-    ///
-    /// # Implementation note
-    ///
-    /// We shell out to the `git` CLI rather than using `gix` directly so that
-    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
-    /// automatically.
-    pub fn git_fetch(&self) -> Result<()> {
-        let status = std::process::Command::new("git")
-            .current_dir(self.repo.path())
-            .args(["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"])
-            .status()
-            .context("Failed to run git fetch")?;
-        if !status.success() {
-            bail!("git fetch failed");
-        }
-        Ok(())
-    }
-
-    /// Tests whether `ancestor` is an ancestor of `descendant`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the object graph cannot be traversed.
-    pub fn git_ancestor_check(
-        &self,
-        ancestor: gix::ObjectId,
-        descendant: gix::ObjectId,
-    ) -> Result<bool> {
-        match self.repo.merge_base(ancestor, descendant) {
-            Ok(base) => Ok(base == ancestor),
-            Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Pushes the manifest and the enabled topic refs for this host to `origin`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `git` binary is missing or the push fails.
-    ///
-    /// # Implementation note
-    ///
-    /// We shell out to the `git` CLI rather than using `gix` directly so that
-    /// the user's credential helpers, SSH agent, and `~/.gitconfig` are inherited
-    /// automatically.
-    pub fn push_enabled(&self, hostname: &str, topics: &[&str]) -> Result<()> {
-        let mut refspecs = vec!["refs/heads/manifest".to_string()];
-        for topic in topics {
-            if self.get_topic_head(topic)?.is_some() {
-                refspecs.push(format!("refs/heads/topic/{topic}"));
-            }
-            if self.get_topic_hostname_head(topic, hostname)?.is_some() {
-                refspecs.push(format!("refs/heads/system/{hostname}/{topic}"));
-            }
-        }
-
-        let status = std::process::Command::new("git")
-            .current_dir(self.repo.path())
-            .arg("push")
-            .arg("origin")
-            .args(refspecs)
-            .status()
-            .context("Failed to run git push")?;
-        if !status.success() {
-            bail!("git push failed");
-        }
-        Ok(())
-    }
-
-    /// Gets the head commit for a topic on a remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the remote tracking branch cannot be read.
-    pub fn get_remote_topic_head(
-        &self,
-        remote: &str,
-        topic: &str,
-    ) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("{remote}/topic/{topic}");
-        self.get_remote_branch_head(&branch_name)
-    }
-
-    /// Gets the head commit for a topic/hostname pair on a remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the remote tracking branch cannot be read.
-    pub fn get_remote_topic_hostname_head(
-        &self,
-        remote: &str,
-        topic: &str,
-        hostname: &str,
-    ) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("{remote}/system/{hostname}/{topic}");
-        self.get_remote_branch_head(&branch_name)
-    }
-
-    /// Gets the head commit for the manifest on a remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the remote tracking branch cannot be read.
-    pub fn get_remote_manifest_head(&self, remote: &str) -> Result<Option<gix::ObjectId>> {
-        let branch_name = format!("{remote}/manifest");
-        self.get_remote_branch_head(&branch_name)
-    }
-
-    fn get_remote_branch_head(&self, branch: &str) -> Result<Option<gix::ObjectId>> {
-        let reference_name = format!("refs/remotes/{branch}");
-        trace!("Looking up remote branch head for '{reference_name}'");
-        match self.repo.find_reference(&reference_name) {
-            Ok(reference) => Ok(Some(
-                reference
-                    .target()
-                    .try_id()
-                    .context("Reference does not point to an object id")?
-                    .to_owned(),
-            )),
-            Err(gix::reference::find::existing::Error::NotFound { .. }) => {
-                debug!("Remote branch '{reference_name}' not found");
-                Ok(None)
-            }
-            Err(e) => Err(e.into()),
-        }
+        self.update_heads(&[(Branch::system(hostname, topic), topic_head)])
     }
 
     // -- compound operations --
 
-    /// Returns the tree OID for a topic, or the empty tree if the topic has no head.
+    /// Writes a commit with exactly the supplied parents, in iterator order.
+    ///
+    /// Parent selection and branch updates are intentionally left to the caller.
     ///
     /// # Errors
     ///
-    /// Returns an error if the topic head cannot be read or peeled.
-    pub fn get_topic_tree_oid(&self, topic: &str) -> Result<gix::ObjectId> {
-        let oid = match self.get_topic_head(topic)? {
-            Some(commit_oid) => self.find_object(commit_oid)?.peel_to_tree()?.id().into(),
-            None => self.empty_tree_id(),
-        };
-        trace!("Resolved topic '{topic}' tree to {oid}");
-        Ok(oid)
-    }
-
-    /// Returns the tree OID for a topic on the current hostname, or the empty tree if none.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the hostname head cannot be read or peeled.
-    pub fn get_topic_hostname_tree_oid(
+    /// Returns an error if the commit object cannot be written.
+    pub fn commit_tree(
         &self,
-        topic: &str,
-        hostname: &str,
+        tree_oid: impl Into<gix::ObjectId>,
+        parents: impl IntoIterator<Item = gix::ObjectId>,
+        message: impl Into<gix::bstr::BString>,
     ) -> Result<gix::ObjectId> {
-        let oid = match self.get_topic_hostname_head(topic, hostname)? {
-            Some(commit_oid) => self.find_object(commit_oid)?.peel_to_tree()?.id().into(),
-            None => self.empty_tree_id(),
+        let commit = gix::objs::Commit {
+            tree: tree_oid.into(),
+            parents: parents.into_iter().collect(),
+            message: message.into(),
+            author: Self::porchetta_signature(),
+            committer: Self::porchetta_signature(),
+            encoding: None,
+            extra_headers: vec![],
         };
-        trace!("Resolved topic '{topic}' hostname '{hostname}' tree to {oid}");
-        Ok(oid)
+        Ok(self.repo.write_object(commit)?.into())
     }
 
     /// Creates a commit for a topic tree and returns the commit OID.
@@ -574,24 +441,48 @@ impl PorchettaStore {
         message: impl Into<gix::bstr::BString>,
     ) -> Result<gix::ObjectId> {
         let mut parents: smallvec::SmallVec<[gix::ObjectId; 1]> = self
-            .get_topic_head(topic)?
+            .head(&Branch::topic(topic))?
             .into_iter()
-            .chain(self.get_topic_hostname_head(topic, hostname)?)
+            .chain(self.head(&Branch::system(hostname, topic))?)
             .collect();
         parents.dedup();
-        let commit = gix::objs::Commit {
-            tree: tree_oid.into(),
-            parents,
-            message: message.into(),
-            author: Self::porchetta_signature(),
-            committer: Self::porchetta_signature(),
-            encoding: None,
-            extra_headers: vec![],
-        };
-        let commit_oid: gix::ObjectId = self.write_object(commit)?.into();
-        let branch_name = format!("topic/{topic}");
+        let commit_oid = self.commit_tree(tree_oid, parents, message)?;
         debug!("Committed topic '{topic}' as {commit_oid}");
-        self.update_branch_head(&branch_name, commit_oid)?;
+        self.update_heads(&[(Branch::topic(topic), commit_oid)])?;
         Ok(commit_oid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_commit_deduplicates_identical_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(temp.path()).unwrap();
+        let store = PorchettaStore::init_at(path).unwrap();
+        let tree: gix::ObjectId = store.repo().empty_tree().id().into();
+        let head = store.commit_tree(tree, [], "topic head").unwrap();
+        store
+            .update_heads(&[
+                (Branch::topic("test"), head),
+                (Branch::system("host", "test"), head),
+            ])
+            .unwrap();
+
+        let installed = store
+            .commit_topic_tree("test", "host", tree, "deduplicated parents")
+            .unwrap();
+        let parents: Vec<_> = store
+            .repo()
+            .find_object(installed)
+            .unwrap()
+            .try_into_commit()
+            .unwrap()
+            .parent_ids()
+            .map(gix::Id::detach)
+            .collect();
+        assert_eq!(parents, [head]);
     }
 }

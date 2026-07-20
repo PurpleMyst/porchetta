@@ -29,7 +29,6 @@ pub trait ConflictResolver {
     /// Returns an error if the user cancels or the prompt fails.
     fn choose_entry_kind(
         &self,
-        prompt: &str,
         ours: gix::objs::tree::EntryKind,
         theirs: gix::objs::tree::EntryKind,
     ) -> Result<gix::objs::tree::EntryKind>;
@@ -54,7 +53,6 @@ impl ConflictResolver for PanickingResolver {
 
     fn choose_entry_kind(
         &self,
-        _prompt: &str,
         _ours: gix::objs::tree::EntryKind,
         _theirs: gix::objs::tree::EntryKind,
     ) -> Result<gix::objs::tree::EntryKind> {

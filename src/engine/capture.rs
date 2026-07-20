@@ -6,7 +6,6 @@ use gix::ObjectId;
 use log::{debug, trace};
 
 use super::path_util::to_tree_path;
-use crate::store::PorchettaStore;
 
 /// Normalize line endings in the content to LF. If the content is not valid UTF-8, it is returned as-is.
 fn normalize_line_endings(content: Vec<u8>) -> Vec<u8> {
@@ -31,13 +30,13 @@ fn normalize_line_endings(content: Vec<u8>) -> Vec<u8> {
 /// Returns an error if the include hook fails, a file cannot be read,
 /// the transform fails, or writing to the store fails.
 pub fn snapshot_topic(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     topic_base: &Utf8Path,
     paths: &[Utf8PathBuf],
     mut should_include: impl FnMut(&str) -> Result<bool>,
     mut to_repo: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
 ) -> Result<ObjectId> {
-    let mut editor = store.edit_tree(store.empty_tree_id())?;
+    let mut editor = repo.edit_tree(repo.empty_tree().id())?;
     let mut file_count = 0;
     let mut queue = VecDeque::new();
 
@@ -59,7 +58,7 @@ pub fn snapshot_topic(
         }
         if p2.is_file() {
             if snapshot_file(
-                store,
+                repo,
                 topic_base,
                 &p2,
                 &mut should_include,
@@ -90,7 +89,7 @@ pub fn snapshot_topic(
 }
 
 fn snapshot_file(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     topic_base: &Utf8Path,
     file: &Utf8Path,
     should_include: &mut impl FnMut(&str) -> Result<bool>,
@@ -105,7 +104,7 @@ fn snapshot_file(
     trace!("Found file: {file}");
     let content = std::fs::read(file).with_context(|| format!("Failed to read file '{file}'"))?;
     let content = normalize_line_endings(to_repo(&relative_path, &content)?);
-    let blob_oid = store.write_blob(&content)?;
+    let blob_oid = repo.write_blob(&content)?;
     editor.upsert(&relative_path, gix::objs::tree::EntryKind::Blob, blob_oid)?;
     Ok(true)
 }

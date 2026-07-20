@@ -1,10 +1,80 @@
 use super::resolver::ConflictResolver;
-use crate::store::PorchettaStore;
 use anyhow::{Context, Result, bail, ensure};
-use gix::bstr::ByteSlice;
+use gix::bstr::{BString, ByteSlice};
 use gix::merge::tree::TreatAsUnresolved;
 use gix::{ObjectId, diff::tree_with_rewrites::Change};
 use log::{debug, warn};
+
+/// Merges three trees with Porchetta's conflict labels (`name` is the topic or branch).
+///
+/// # Errors
+///
+/// Returns an error if the trees cannot be read or the merge fails.
+pub fn merge_trees<'a>(
+    repo: &'a gix::Repository,
+    base: impl AsRef<gix::oid>,
+    ours: impl AsRef<gix::oid>,
+    theirs: impl AsRef<gix::oid>,
+    name: &str,
+) -> Result<gix::merge::tree::Outcome<'a>> {
+    Ok(repo.merge_trees(
+        base,
+        ours,
+        theirs,
+        gix::merge::blob::builtin_driver::text::Labels {
+            ancestor: Some(BString::from(format!("{name} (last applied)")).as_bstr()),
+            current: Some(BString::from(format!("{name} (on system)")).as_bstr()),
+            other: Some(BString::from(format!("{name} (in repo)")).as_bstr()),
+        },
+        repo.tree_merge_options()?,
+    )?)
+}
+
+/// Merges two commits using their automatically determined merge base.
+///
+/// The returned outcome is the tree merge so callers can resolve conflicts and
+/// write the resulting tree without retaining commit-merge bookkeeping.
+///
+/// # Errors
+///
+/// Returns an error if the merge base or commits cannot be read, or the merge fails.
+pub fn merge_commits<'a>(
+    repo: &'a gix::Repository,
+    ours: impl Into<gix::ObjectId>,
+    theirs: impl Into<gix::ObjectId>,
+    name: &str,
+) -> Result<gix::merge::tree::Outcome<'a>> {
+    let ours_label = BString::from(format!("{name} (local)"));
+    let theirs_label = BString::from(format!("{name} (remote)"));
+    let outcome = repo.merge_commits(
+        ours,
+        theirs,
+        gix::merge::blob::builtin_driver::text::Labels {
+            ancestor: None,
+            current: Some(ours_label.as_bstr()),
+            other: Some(theirs_label.as_bstr()),
+        },
+        repo.tree_merge_options()?.into(),
+    )?;
+    Ok(outcome.tree_merge)
+}
+
+/// Tests whether `ancestor` is an ancestor of `descendant`.
+///
+/// # Errors
+///
+/// Returns an error if the object graph cannot be traversed.
+pub fn is_ancestor(
+    repo: &gix::Repository,
+    ancestor: gix::ObjectId,
+    descendant: gix::ObjectId,
+) -> Result<bool> {
+    match repo.merge_base(ancestor, descendant) {
+        Ok(base) => Ok(base == ancestor),
+        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.
 ///
@@ -12,7 +82,7 @@ use log::{debug, warn};
 ///
 /// Returns an error if resolution fails or the user aborts.
 pub fn resolve_conflicts(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     resolver: &dyn ConflictResolver,
     outcome: &mut gix::merge::tree::Outcome<'_>,
 ) -> Result<()> {
@@ -20,7 +90,7 @@ pub fn resolve_conflicts(
         if !conflict.is_unresolved(TreatAsUnresolved::default()) {
             continue;
         }
-        resolve_conflict(store, resolver, conflict, &mut outcome.tree)?;
+        resolve_conflict(repo, resolver, conflict, &mut outcome.tree)?;
     }
     Ok(())
 }
@@ -40,7 +110,7 @@ pub fn show_conflicts(outcome: &gix::merge::tree::Outcome<'_>) {
 }
 
 fn resolve_conflict(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     resolver: &dyn ConflictResolver,
     conflict: &gix::merge::tree::Conflict,
     merged_tree: &mut gix::object::tree::Editor<'_>,
@@ -54,7 +124,7 @@ fn resolve_conflict(
     debug!("Their change: {theirs_change:?}");
 
     if is_blob_level_conflict(conflict, ours_change, theirs_change) {
-        resolve_blob_level_conflict(store, resolver, conflict, merged_tree)?;
+        resolve_blob_level_conflict(repo, resolver, conflict, merged_tree)?;
     } else {
         resolve_tree_level_conflict(resolver, conflict, merged_tree)?;
     }
@@ -63,7 +133,7 @@ fn resolve_conflict(
 }
 
 fn resolve_blob_level_conflict(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     resolver: &dyn ConflictResolver,
     conflict: &gix::merge::tree::Conflict,
     merged_tree: &mut gix::object::tree::Editor<'_>,
@@ -80,18 +150,13 @@ fn resolve_blob_level_conflict(
         .content_merge()
         .context("Expected merged blob for blob-level conflict")?;
     let edited_blob_id = edit_blob_in_editor(
-        store,
+        repo,
         resolver,
         content_merge.merged_blob_id,
         &ours_change.location().to_str_lossy(),
     )?;
 
-    let entry_kind = if ours_change.entry_mode().kind() == theirs_change.entry_mode().kind() {
-        ours_change.entry_mode().kind()
-    } else {
-        entry_kind_for_shared_location(resolver, ours_change, theirs_change)?
-    };
-
+    let entry_kind = entry_kind_for_shared_location(resolver, ours_change, theirs_change)?;
     merged_tree.upsert(ours_change.location(), entry_kind, edited_blob_id)?;
     Ok(())
 }
@@ -243,24 +308,23 @@ fn entry_kind_for_shared_location(
         return Ok(ours_kind);
     }
 
-    let prompt = "Local and remote entries have different kinds. Which should be used?";
-    resolver.choose_entry_kind(prompt, ours_kind, theirs_kind)
+    resolver.choose_entry_kind(ours_kind, theirs_kind)
 }
 
 fn edit_blob_in_editor(
-    store: &PorchettaStore,
+    repo: &gix::Repository,
     resolver: &dyn ConflictResolver,
     blob_oid: ObjectId,
     path: &str,
 ) -> Result<ObjectId> {
-    let blob = store
+    let blob = repo
         .find_blob(blob_oid)
         .with_context(|| format!("Failed to read merged blob '{blob_oid}' for conflict"))?;
 
     let edited_content = resolver
         .edit_blob(&blob.data, path)
         .context("Failed to edit blob for conflict resolution")?;
-    Ok(store.write_blob(edited_content)?.into())
+    Ok(repo.write_blob(edited_content)?.into())
 }
 
 fn apply_change_to_tree(tree: &mut gix::object::tree::Editor<'_>, change: &Change) -> Result<()> {
