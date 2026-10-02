@@ -232,13 +232,7 @@ fn handle_remote(command: RemoteCommand) -> Result<()> {
         }
         RemoteCommand::List => {
             for remote in store.remotes().context("Failed to list remotes")? {
-                use std::io::Write;
-                writeln!(
-                    std::io::stdout().lock(),
-                    "{}: {}",
-                    remote.name(),
-                    remote.url()
-                )?;
+                println!("{}: {}", remote.name(), remote.url());
             }
         }
         RemoteCommand::Remove { name } => {

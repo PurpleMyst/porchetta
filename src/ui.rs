@@ -32,10 +32,6 @@ fn colors_enabled() -> bool {
     }
 }
 
-fn styled(text: &str, style: Style) -> ColoredText<'_> {
-    ColoredText { text, style }
-}
-
 fn routine(text: impl std::fmt::Display) {
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("{text}");
@@ -44,7 +40,13 @@ fn routine(text: impl std::fmt::Display) {
 
 /// Print a section header.
 pub fn header(text: &str) {
-    routine(format_args!("\n{}", styled(text, Style::new().bold())));
+    routine(format_args!(
+        "\n{}",
+        ColoredText {
+            text,
+            style: Style::new().bold()
+        }
+    ));
 }
 
 /// Introduce a sync or preview and its mutation guarantees.
@@ -67,18 +69,33 @@ pub fn sync_header(hostname: &str, dry_run: bool, offline: bool, remotes: usize)
 pub fn success(text: &str) {
     routine(format_args!(
         "{} {text}",
-        styled("✓", Style::new().green().bold())
+        ColoredText {
+            text: "✓",
+            style: Style::new().green().bold()
+        }
     ));
 }
 
 /// Print an error message, even in quiet mode.
 pub fn error(text: &str) {
-    eprintln!("{} {text}", styled("✗", Style::new().red().bold()));
+    eprintln!(
+        "{} {text}",
+        ColoredText {
+            text: "✗",
+            style: Style::new().red().bold()
+        }
+    );
 }
 
 /// Print a warning, even in quiet mode.
 pub fn warning(text: &str) {
-    eprintln!("{} {text}", styled("!", Style::new().yellow().bold()));
+    eprintln!(
+        "{} {text}",
+        ColoredText {
+            text: "!",
+            style: Style::new().yellow().bold()
+        }
+    );
 }
 
 /// Print an informational message.
@@ -88,14 +105,20 @@ pub fn info(text: &str) {
 
 /// Print dimmed secondary text.
 pub fn muted(text: &str) {
-    routine(styled(text, Style::new().dimmed()));
+    routine(ColoredText {
+        text,
+        style: Style::new().dimmed(),
+    });
 }
 
 /// Print a bullet point.
 pub fn bullet(text: &str) {
     routine(format_args!(
         "  {} {text}",
-        styled("●", Style::new().cyan())
+        ColoredText {
+            text: "●",
+            style: Style::new().cyan()
+        }
     ));
 }
 
@@ -118,7 +141,10 @@ pub fn topic(name: &str, status: &str, detail: &str) {
     let row = format_args!(
         "  {} {}  {}",
         color_status_for(symbol, status),
-        styled(name, Style::new().bold()),
+        ColoredText {
+            text: name,
+            style: Style::new().bold()
+        },
         color_status_for(detail, status)
     );
     if status == "conflict" {
@@ -144,8 +170,14 @@ pub fn file_change(destination: &str, action: &str, path: &str) {
     let action = format!("{action:<6}");
     routine(format_args!(
         "      {}  {} {path}",
-        styled(&destination, destination_style),
-        styled(&action, action_style)
+        ColoredText {
+            text: &destination,
+            style: destination_style
+        },
+        ColoredText {
+            text: &action,
+            style: action_style
+        }
     ));
 }
 
@@ -154,21 +186,28 @@ pub fn publication(name: &str, failure: Option<&str>) {
     if let Some(reason) = failure {
         eprintln!(
             "  {} {}  {reason}",
-            styled("!", Style::new().yellow().bold()),
-            styled(name, Style::new().bold())
+            ColoredText {
+                text: "!",
+                style: Style::new().yellow().bold()
+            },
+            ColoredText {
+                text: name,
+                style: Style::new().bold()
+            }
         );
     } else {
         routine(format_args!(
             "  {} {}  Published",
-            styled("✓", Style::new().green()),
-            styled(name, Style::new().bold())
+            ColoredText {
+                text: "✓",
+                style: Style::new().green()
+            },
+            ColoredText {
+                text: name,
+                style: Style::new().bold()
+            }
         ));
     }
-}
-
-/// Color a sync status string for display.
-pub fn color_status(text: &str) -> ColoredText<'_> {
-    color_status_for(text, text)
 }
 
 fn color_status_for<'a>(text: &'a str, status: &str) -> ColoredText<'a> {
@@ -180,12 +219,12 @@ fn color_status_for<'a>(text: &'a str, status: &str) -> ColoredText<'a> {
         "conflict" => Style::new().red().bold(),
         _ => Style::new(),
     };
-    styled(text, style)
+    ColoredText { text, style }
 }
 
 /// A non-allocating wrapper that styles text only when color is enabled.
 #[must_use]
-pub struct ColoredText<'a> {
+struct ColoredText<'a> {
     text: &'a str,
     style: Style,
 }
