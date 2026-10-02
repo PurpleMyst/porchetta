@@ -278,7 +278,8 @@ impl PorchettaEngine {
                 .with_context(|| format!("Topic '{}' was not reconciled", info.name))?;
             if matches!(state, Reconciled::Conflict) {
                 summary.record(SyncTopicStatus::Conflict);
-                ui::topic(
+                Self::report_topic(
+                    &manifest,
                     &info.name,
                     "conflict",
                     "History conflict · needs resolution",
@@ -331,6 +332,17 @@ impl PorchettaEngine {
         Ok(())
     }
 
+    fn report_topic(manifest: &Manifest, name: &str, status: &str, detail: &str) {
+        let width = manifest
+            .topics
+            .iter()
+            .filter(|topic| topic.enabled)
+            .map(|topic| topic.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        ui::topic(&format!("{name:<width$}"), status, detail);
+    }
+
     fn sync_topic(
         &mut self,
         manifest: &crate::manifest::Manifest,
@@ -381,7 +393,8 @@ impl PorchettaEngine {
             dry_run,
         ) {
             if changed_wrt_repo && !dry_run {
-                ui::topic(
+                Self::report_topic(
+                    manifest,
                     name,
                     "captured",
                     &format!(
@@ -418,7 +431,7 @@ impl PorchettaEngine {
         if details.is_empty() {
             details.push("Unchanged".into());
         }
-        ui::topic(name, status.label(), &details.join(" · "));
+        Self::report_topic(manifest, name, status.label(), &details.join(" · "));
         self.print_file_changes(&store_changes, None);
         self.print_file_changes(&machine_changes, Some(&topic_base));
 
@@ -487,7 +500,7 @@ impl PorchettaEngine {
             self::merge::merge_trees(self.store.repo(), base, ours, theirs, name)?;
 
         if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
-            ui::topic(name, "conflict", "Needs resolution");
+            Self::report_topic(manifest, name, "conflict", "Needs resolution");
             self::merge::show_conflicts(&merge_outcome);
             ui::muted("  run `porchetta sync` to resolve interactively");
             return Ok(None);

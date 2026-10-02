@@ -307,3 +307,41 @@ fn publication_failure_is_distinct_from_local_success_and_can_be_retried() {
         remote.head(&Branch::topic("shell")).unwrap()
     );
 }
+
+#[test]
+fn topic_statuses_align_after_the_longest_enabled_name() {
+    let fixture = Fixture::new();
+    PorchettaStore::load_at(&fixture.store)
+        .unwrap()
+        .write_manifest(
+            br"return { topics = {
+        config = { root = '.config/demo', paths = {'.'} },
+        pi_agent_extensions = { paths = {'.bashrc'} },
+        disabled_topic_with_a_much_longer_name = { enabled = false, paths = {'unused'} },
+    } }",
+        )
+        .unwrap();
+    for args in [
+        vec!["sync", "--offline", "--dry-run"],
+        vec!["sync", "--offline"],
+    ] {
+        let report = fixture.success(&args);
+        let short = report
+            .lines()
+            .find(|line| line.starts_with("  · config "))
+            .unwrap();
+        let long = report
+            .lines()
+            .find(|line| line.contains("pi_agent_extensions"))
+            .unwrap();
+        let short_column = short.chars().position(|ch| ch == 'U').unwrap();
+        let long_column = long.chars().position(|ch| ch == 'W' || ch == 'C').unwrap();
+        assert_eq!(short_column, long_column, "{report}");
+        assert_eq!(
+            short_column,
+            "  · ".chars().count() + "pi_agent_extensions".len() + 2,
+            "{report}"
+        );
+        assert!(!report.contains("disabled_topic_with_a_much_longer_name"));
+    }
+}

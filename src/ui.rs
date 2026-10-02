@@ -115,11 +115,10 @@ pub fn topic(name: &str, status: &str, detail: &str) {
         "conflict" => "!",
         _ => "·",
     };
-    let name = format!("{name:<10}");
     let row = format_args!(
         "  {} {}  {}",
         color_status_for(symbol, status),
-        styled(&name, Style::new().bold()),
+        styled(name, Style::new().bold()),
         color_status_for(detail, status)
     );
     if status == "conflict" {
