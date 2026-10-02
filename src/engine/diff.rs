@@ -1,4 +1,3 @@
-use std::fmt;
 use std::ops::ControlFlow;
 
 use anyhow::{Result, bail};
@@ -15,19 +14,6 @@ pub enum ApplyOperation {
     Delete {
         relative_path: Utf8PathBuf,
     },
-}
-
-impl fmt::Display for ApplyOperation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Upsert { relative_path, .. } => {
-                write!(f, "upsert {relative_path}")
-            }
-            Self::Delete { relative_path } => {
-                write!(f, "delete {relative_path}")
-            }
-        }
-    }
 }
 
 /// Compare `our_tree` with `merged_tree` and return the operations needed
@@ -92,4 +78,41 @@ pub fn collect_apply_operations(
     })?;
 
     Ok(operations)
+}
+
+/// A file-level change for reporting, relative to a topic root.
+pub struct FileChange {
+    pub action: &'static str,
+    pub relative_path: Utf8PathBuf,
+}
+
+/// Describe the file changes between two trees, without applying them.
+///
+/// # Errors
+///
+/// Returns an error if reading trees or diffing fails.
+pub fn collect_file_changes(
+    before: &gix::Tree<'_>,
+    after: &gix::Tree<'_>,
+) -> Result<Vec<FileChange>> {
+    collect_apply_operations(before, after)?
+        .into_iter()
+        .map(|operation| {
+            let (action, relative_path) = match operation {
+                ApplyOperation::Upsert { relative_path, .. } => {
+                    let action = if before.lookup_entry_by_path(&relative_path)?.is_some() {
+                        "update"
+                    } else {
+                        "add"
+                    };
+                    (action, relative_path)
+                }
+                ApplyOperation::Delete { relative_path } => ("delete", relative_path),
+            };
+            Ok(FileChange {
+                action,
+                relative_path,
+            })
+        })
+        .collect()
 }

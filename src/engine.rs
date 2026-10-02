@@ -25,6 +25,8 @@ pub struct PorchettaEngine {
 
 struct SyncTopicResult {
     status: SyncTopicStatus,
+    stored: usize,
+    applied: usize,
 }
 
 /// The three trees involved in a topic sync: the filesystem snapshot, the
@@ -89,6 +91,8 @@ struct SyncSummary {
     unchanged: usize,
     changed: usize,
     conflicts: usize,
+    stored: usize,
+    applied: usize,
 }
 
 impl SyncSummary {
@@ -106,11 +110,31 @@ impl SyncSummary {
         }
     }
 
-    fn print(self) {
+    fn print(&self, dry_run: bool) {
+        if self.conflicts > 0 {
+            ui::warning(&format!(
+                "Preview incomplete · {} conflict(s) need resolution",
+                self.conflicts
+            ));
+            ui::warning("Run `porchetta sync` to resolve interactively.");
+        } else {
+            ui::header(if dry_run {
+                "Preview complete"
+            } else {
+                "Local sync complete"
+            });
+            ui::success(&format!(
+                "{} topics checked · {} changed · {} unchanged",
+                self.total, self.changed, self.unchanged
+            ));
+        }
         ui::info(&format!(
-            "Summary: {} topic(s) checked, {} clean, {} changed, {} conflict(s)",
-            self.total, self.unchanged, self.changed, self.conflicts
+            "  Store: {} file changes · machine: {} file changes",
+            self.stored, self.applied
         ));
+        if dry_run {
+            ui::muted("  No changes are published during this dry run.");
+        }
     }
 }
 
@@ -194,6 +218,8 @@ impl PorchettaEngine {
             .to_string_lossy()
             .into_owned();
         debug!("Detected hostname: {hostname}");
+        ui::sync_header(&hostname, dry_run, offline, remotes.len());
+        ui::header("Topics");
 
         let local_manifest = self.store.head(&Branch::Manifest)?;
         let remote_manifest_heads = self.remote_heads(&remotes, &Branch::Manifest)?;
@@ -252,12 +278,19 @@ impl PorchettaEngine {
                 .with_context(|| format!("Topic '{}' was not reconciled", info.name))?;
             if matches!(state, Reconciled::Conflict) {
                 summary.record(SyncTopicStatus::Conflict);
+                ui::topic(
+                    &info.name,
+                    "conflict",
+                    "History conflict · needs resolution",
+                );
                 continue;
             }
             let result = self.sync_topic(&manifest, info, &hostname, dry_run, state)?;
             summary.record(result.status);
+            summary.stored += result.stored;
+            summary.applied += result.applied;
         }
-        summary.print();
+        summary.print(dry_run);
 
         if !dry_run {
             let topic_names: Vec<_> = manifest
@@ -273,23 +306,23 @@ impl PorchettaEngine {
     }
 
     fn publish(&self, remotes: &[Remote], topics: &[&str]) -> Result<()> {
+        if remotes.is_empty() {
+            return Ok(());
+        }
+        ui::header("Publication");
         let mut failures = Vec::new();
         for remote in remotes {
             match self.store.push_topics(remote, topics) {
-                Ok(()) => ui::info(&format!(
-                    "Published synchronized refs to '{}'",
-                    remote.name()
-                )),
+                Ok(()) => ui::publication(remote.name(), None),
                 Err(error) => {
-                    ui::error(&format!(
-                        "Failed to publish to '{}': {error}",
-                        remote.name()
-                    ));
+                    ui::publication(remote.name(), Some(&error.to_string()));
                     failures.push(format!("{}: {error}", remote.name()));
                 }
             }
         }
         if !failures.is_empty() {
+            ui::warning("Publication incomplete. Local changes are retained.");
+            ui::warning("Run `porchetta sync` to retry publication.");
             bail!(
                 "Local synchronization succeeded, but publication failed for: {}",
                 failures.join("; ")
@@ -319,6 +352,8 @@ impl PorchettaEngine {
         else {
             return Ok(SyncTopicResult {
                 status: SyncTopicStatus::Conflict,
+                stored: 0,
+                applied: 0,
             });
         };
 
@@ -326,24 +361,95 @@ impl PorchettaEngine {
             matches!(reconciled, Reconciled::NoHistory) || trees.merged != trees.theirs;
         let changed_wrt_system = trees.merged != trees.ours;
         let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
-        ui::bullet(&format!("{name} — {}", ui::color_status(status.label())));
+        let merged_tree = self.store.repo().find_tree(trees.merged)?;
+        let store_changes = self::diff::collect_file_changes(
+            &self.store.repo().find_tree(trees.theirs)?,
+            &merged_tree,
+        )?;
+        let machine_changes = self::diff::collect_file_changes(
+            &self.store.repo().find_tree(trees.ours)?,
+            &merged_tree,
+        )?;
 
         self.commit_repo_change(name, hostname, changed_wrt_repo, trees.merged, dry_run)?;
-        self.apply_system_change(
+        if let Err(error) = self.apply_system_change(
             info,
             &topic_base,
             changed_wrt_system,
             trees.ours,
             trees.merged,
             dry_run,
-        )?;
+        ) {
+            if changed_wrt_repo && !dry_run {
+                ui::topic(
+                    name,
+                    "captured",
+                    &format!(
+                        "Captured {} file change{} into store",
+                        store_changes.len(),
+                        if store_changes.len() == 1 { "" } else { "s" }
+                    ),
+                );
+                self.print_file_changes(&store_changes, None);
+            }
+            ui::error(&format!(
+                "Topic '{name}' incomplete · machine changes may be partially applied"
+            ));
+            return Err(error);
+        }
+
+        let mut details = Vec::new();
+        if changed_wrt_repo {
+            details.push(format!(
+                "{} {} file change{} into store",
+                if dry_run { "Would capture" } else { "Captured" },
+                store_changes.len(),
+                if store_changes.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if changed_wrt_system {
+            details.push(format!(
+                "{} {} file change{} to machine",
+                if dry_run { "Would apply" } else { "Applied" },
+                machine_changes.len(),
+                if machine_changes.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if details.is_empty() {
+            details.push("Unchanged".into());
+        }
+        ui::topic(name, status.label(), &details.join(" · "));
+        self.print_file_changes(&store_changes, None);
+        self.print_file_changes(&machine_changes, Some(&topic_base));
 
         if !dry_run {
             self.store.update_topic_hostname_head(name, hostname)?;
         }
 
         info!("Synchronized topic '{name}'");
-        Ok(SyncTopicResult { status })
+        Ok(SyncTopicResult {
+            status,
+            stored: store_changes.len(),
+            applied: machine_changes.len(),
+        })
+    }
+
+    fn print_file_changes(
+        &self,
+        changes: &[self::diff::FileChange],
+        base: Option<&camino::Utf8Path>,
+    ) {
+        for change in changes {
+            if let Some(base) = base {
+                let path = base.join(&change.relative_path);
+                let display = path
+                    .strip_prefix(&self.home)
+                    .map_or_else(|_| path.to_string(), |relative| format!("~/{relative}"));
+                ui::file_change("Machine", change.action, &display);
+            } else {
+                ui::file_change("Store", change.action, change.relative_path.as_str());
+            }
+        }
     }
 
     /// Snapshots the topic's files and three-way merges them against the
@@ -381,7 +487,7 @@ impl PorchettaEngine {
             self::merge::merge_trees(self.store.repo(), base, ours, theirs, name)?;
 
         if dry_run && merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
-            ui::bullet(&format!("{name} — {}", ui::color_status("conflict")));
+            ui::topic(name, "conflict", "Needs resolution");
             self::merge::show_conflicts(&merge_outcome);
             ui::muted("  run `porchetta sync` to resolve interactively");
             return Ok(None);
@@ -418,7 +524,6 @@ impl PorchettaEngine {
             return Ok(());
         }
         if dry_run {
-            ui::bullet(&format!("  repo: would update topic tree to {merged}"));
             return Ok(());
         }
         self.store.commit_topic_tree(
@@ -450,13 +555,6 @@ impl PorchettaEngine {
             .with_context(|| format!("Failed to compute apply operations for topic '{name}'"))?;
 
         if dry_run {
-            ui::info(&format!(
-                "  system: would apply {} change(s) under {topic_base}",
-                operations.len()
-            ));
-            for op in &operations {
-                ui::muted(&format!("    {op}"));
-            }
             return Ok(());
         }
 

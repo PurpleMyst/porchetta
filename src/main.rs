@@ -83,9 +83,13 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
-    /// Decrease output verbosity
+    /// Suppress routine output (warnings and errors remain visible)
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Control colors in the report
+    #[arg(long, global = true, default_value = "auto", value_parser = ["auto", "always", "never"])]
+    color: String,
 }
 
 #[derive(Subcommand, Clone)]
@@ -201,7 +205,7 @@ fn edit_manifest_with_workspace(editor: &str, content: &[u8]) -> Result<Vec<u8>>
     std::fs::read(workspace_path.join("manifest.lua")).context("Failed to read edited manifest")
 }
 
-fn init_logging(_quiet: bool) -> Result<()> {
+fn init_logging() -> Result<()> {
     let log_dir = dirs::data_local_dir()
         .context("Could not determine local data directory")?
         .join("porchetta")
@@ -228,7 +232,13 @@ fn handle_remote(command: RemoteCommand) -> Result<()> {
         }
         RemoteCommand::List => {
             for remote in store.remotes().context("Failed to list remotes")? {
-                ui::bullet(&format!("{}: {}", remote.name(), remote.url()));
+                use std::io::Write;
+                writeln!(
+                    std::io::stdout().lock(),
+                    "{}: {}",
+                    remote.name(),
+                    remote.url()
+                )?;
             }
         }
         RemoteCommand::Remove { name } => {
@@ -244,7 +254,8 @@ fn handle_remote(command: RemoteCommand) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    init_logging(cli.quiet)?;
+    ui::configure(cli.quiet, &cli.color);
+    init_logging()?;
 
     match cli.command {
         Command::Init => {
@@ -279,17 +290,7 @@ fn main() -> Result<()> {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store, InteractiveResolver)
                 .context("Failed to create engine")?;
-            if dry_run {
-                ui::header("Syncing topics (dry run)");
-            } else {
-                ui::header("Syncing topics");
-            }
             engine.sync(dry_run, offline).context("Failed to sync")?;
-            if dry_run {
-                ui::success("Dry run complete");
-            } else {
-                ui::success("All topics synchronized");
-            }
         }
         Command::Remote { command } => handle_remote(command)?,
 

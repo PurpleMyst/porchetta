@@ -147,6 +147,28 @@ For other editors, or for manifests edited outside `porchetta manifest edit`, us
 | `porchetta remote remove <name>` | Remove a named remote. |
 | `porchetta migrate chezmoi` | Import topics from a chezmoi source directory. Use `--source-dir <dir>` to override the default and `--yes` to skip the overwrite prompt. |
 
+### Sync reports and output controls
+
+Normal syncs and dry runs both list every file-level addition, update, and deletion, grouped by topic:
+
+```text
+Topics
+  ↑ git         Captured 1 file change into store
+      Store    update .gitconfig
+  ↓ nvim        Applied 2 file changes to machine
+      Machine  update ~/.config/nvim/init.lua
+      Machine  delete ~/.config/nvim/old.lua
+  · shell       Unchanged
+```
+
+`Store` paths are relative to the topic root; `Machine` paths show the destination, using `~/` under your home directory. A file changed in both directions appears twice. Changes are reported as captured or applied only after that operation succeeds. Dry runs use “Would capture” and “Would apply”; unresolved conflicts end with an incomplete-preview warning.
+
+Capture is blue, apply is cyan, success and additions are green, warnings and deletions are yellow, and conflicts/errors are red. Labels remain meaningful without color.
+
+- `--quiet` / `-q` suppresses routine reporting, but preserves warnings and errors.
+- `--color auto|always|never` controls report styling (default: `auto`). Automatic colors require a terminal, honor nonempty `NO_COLOR`, and are disabled for `TERM=dumb`. An explicit `--color always` overrides automatic detection.
+- Human-readable reports go to stderr. `manifest view` and `remote list` write command data to stdout, including in quiet mode.
+
 ## Workflow Examples
 
 ### Set up a new machine
