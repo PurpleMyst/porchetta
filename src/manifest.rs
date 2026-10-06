@@ -3,6 +3,24 @@ use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use log::{debug, trace};
 use mlua::{Lua, Value};
 
+/// Machine-readable manifest validation failure.
+#[derive(Debug)]
+pub struct Diagnostic {
+    pub message: String,
+    pub code: &'static str,
+    pub topic: Option<String>,
+    pub field: Option<&'static str>,
+    pub value: Option<String>,
+}
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Diagnostic {}
+
 pub struct Manifest {
     pub lua: Lua,
     pub topics: Vec<Topic>,
@@ -133,11 +151,31 @@ impl Topic {
 
     fn validate(&self) -> Result<()> {
         if let Some(root) = &self.root {
-            ensure_relative_path(root, &format!("Topic '{}' root", self.name), PathKind::Root)?;
+            ensure_relative_path(root, &format!("Topic '{}' root", self.name), PathKind::Root)
+                .map_err(|error| {
+                    let message = error.to_string();
+                    error.context(Diagnostic {
+                        message,
+                        code: "invalid_path",
+                        topic: Some(self.name.clone()),
+                        field: Some("root"),
+                        value: Some(root.to_string()),
+                    })
+                })?;
         }
 
         for path in &self.paths {
-            ensure_relative_path(path, &format!("Topic '{}' path", self.name), PathKind::Path)?;
+            ensure_relative_path(path, &format!("Topic '{}' path", self.name), PathKind::Path)
+                .map_err(|error| {
+                    let message = error.to_string();
+                    error.context(Diagnostic {
+                        message,
+                        code: "invalid_path",
+                        topic: Some(self.name.clone()),
+                        field: Some("paths"),
+                        value: Some(path.to_string()),
+                    })
+                })?;
         }
 
         Ok(())
@@ -231,6 +269,24 @@ impl Manifest {
     /// Returns an error if the manifest is not a valid table or if any required fields are missing.
     #[allow(clippy::too_many_lines)]
     pub fn load_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
+        Self::parse_with_home(manifest_content, home).map_err(|error| {
+            if error.downcast_ref::<Diagnostic>().is_some() {
+                error
+            } else {
+                let message = error.to_string();
+                error.context(Diagnostic {
+                    message,
+                    code: "invalid_field",
+                    topic: None,
+                    field: None,
+                    value: None,
+                })
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn parse_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
         lua.globals().set(
@@ -238,7 +294,24 @@ impl Manifest {
             crate::lua_runtime::create_porchetta_table(&lua)?,
         )?;
 
-        let manifest_value = lua.load(manifest_content).eval::<Value>()?;
+        let manifest_value = lua
+            .load(manifest_content)
+            .eval::<Value>()
+            .map_err(|error| {
+                let code = if matches!(error, mlua::Error::SyntaxError { .. }) {
+                    "lua_syntax_error"
+                } else {
+                    "lua_runtime_error"
+                };
+                let message = error.to_string();
+                anyhow::Error::from(error).context(Diagnostic {
+                    message,
+                    code,
+                    topic: None,
+                    field: None,
+                    value: None,
+                })
+            })?;
         let manifest_table = manifest_value
             .as_table()
             .ok_or_else(|| anyhow::anyhow!("Manifest must be a table"))?;
@@ -355,6 +428,33 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validation_diagnostics_distinguish_lua_fields_and_paths() {
+        for (source, code) in [
+            ("return {", "lua_syntax_error"),
+            ("error('bad config')", "lua_runtime_error"),
+            (
+                "return { topics = { git = { paths = {'../bad'} } } }",
+                "invalid_path",
+            ),
+            (
+                "return { topics = { git = { paths = {}, enabled = 'yes' } } }",
+                "invalid_field",
+            ),
+        ] {
+            let error = Manifest::load(source.as_bytes()).unwrap_err();
+            let diagnostic = error
+                .downcast_ref::<Diagnostic>()
+                .expect("structured validation diagnostic");
+            assert_eq!(diagnostic.code, code);
+            if code == "invalid_path" {
+                assert_eq!(diagnostic.topic.as_deref(), Some("git"));
+                assert_eq!(diagnostic.field, Some("paths"));
+                assert_eq!(diagnostic.value.as_deref(), Some("../bad"));
+            }
+        }
+    }
 
     #[test]
     fn test_load_manifest() {

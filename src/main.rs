@@ -7,6 +7,8 @@ use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
 
+mod manifest_cli;
+
 /// Interactive resolver that prompts the user via the terminal.
 struct InteractiveResolver;
 
@@ -97,6 +99,9 @@ enum Command {
     /// Initialize a new Porchetta store
     Init,
     /// Manage the manifest
+    #[command(
+        after_help = "Examples:\n  porchetta manifest edit\n  porchetta manifest view > manifest.lua\n  porchetta manifest validate --file manifest.lua\n  porchetta manifest set --file manifest.lua\n\nAgent workflow:\n  Read source and revision with `manifest view --json`.\n  Edit the Lua source, then validate it with `manifest validate --file manifest.lua --json`.\n  Save with `manifest set --file manifest.lua --if-revision <SHA256> --json`.\n  On revision_mismatch, reread and reconcile changes before retrying.\n\nThese commands do not sync managed files or remotes.\nJSON results go to stdout; logs and error reporting go to stderr.\nExit status: 0 success, 1 operation/validation failure, 2 CLI usage error.\nUsage errors are not JSON. Use `<command> --help` for details."
+    )]
     Manifest {
         #[command(subcommand)]
         command: ManifestCommand,
@@ -146,11 +151,55 @@ enum RemoteCommand {
 }
 
 #[derive(Subcommand, Clone)]
-enum ManifestCommand {
+pub(crate) enum ManifestCommand {
     /// Open the manifest in your default editor
+    #[command(
+        after_help = "Example: porchetta manifest edit\n\nUses EDITOR, then VISUAL, then the default editor. Validates the edited Lua\nbefore saving. For non-interactive changes, use `manifest set` instead."
+    )]
     Edit,
     /// Print the current manifest
-    View,
+    #[command(
+        after_help = "Examples:\n  porchetta manifest view > manifest.lua\n  porchetta manifest view --json\n\nDefault output is the exact stored Lua source, without headers.\nJSON output contains `source` (Lua text) and `revision` (lowercase SHA-256\nof the exact source bytes). Pass that revision to `manifest set --if-revision`\nto prevent overwriting changes made since this read. This does not evaluate Lua."
+    )]
+    View {
+        /// Return source and its SHA-256 revision as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the manifest without opening an editor
+    #[command(
+        after_help = "Examples:\n  porchetta manifest set --file manifest.lua\n  porchetta manifest set --stdin < manifest.lua\n  porchetta manifest set --file manifest.lua --if-revision <SHA256> --json\n\nChoose exactly one input: --file or --stdin. Evaluates and validates Lua\nbefore saving; invalid input leaves the stored manifest unchanged.\nLua is not sandboxed. Hooks are not executed by validation.\n\n--if-revision compares the current source's SHA-256 under the store lock.\nOn mismatch, reread with `manifest view --json`, reconcile, and retry.\nWithout --if-revision, the replacement is unconditional. No sync is performed.\n\nJSON success: {\"revision\":\"...\"}. JSON failure: an `errors` array containing\n`code` and `message`; stale writes use code `revision_mismatch`.\nExit status: 0 success, 1 failure, 2 usage error (not JSON)."
+    )]
+    Set {
+        #[command(flatten)]
+        input: manifest_cli::ManifestInput,
+        /// Reject writes if the current source has a different SHA-256
+        #[arg(long, value_name = "SHA256")]
+        if_revision: Option<String>,
+        /// Return the saved revision or structured errors as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate and validate Lua without saving or executing hooks
+    #[command(
+        after_help = "Examples:\n  porchetta manifest validate --file manifest.lua\n  porchetta manifest validate --stdin --json < manifest.lua\n\nChoose exactly one input: --file or --stdin. No initialized store is needed.\nEvaluates Lua on this machine and checks manifest fields and paths using\nthe current home directory. Does not save, sync, or execute hooks.\nLua is not sandboxed; validation does not guarantee hooks will succeed.\n\nJSON success: {\"valid\":true,\"errors\":[]}. Validation failure returns\n`valid: false` and errors with `code`, `message`, and nullable `topic`,\n`field`, and `value`. Input/read failures use code `operation_failed`.\nValidation codes: lua_syntax_error, lua_runtime_error, invalid_field, invalid_path.\nExit status: 0 valid, 1 failure, 2 usage error (not JSON)."
+    )]
+    Validate {
+        #[command(flatten)]
+        input: manifest_cli::ManifestInput,
+        /// Return validity and structured diagnostics as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect the configuration evaluated on this machine
+    #[command(
+        after_help = "Examples:\n  porchetta manifest inspect\n  porchetta manifest inspect --json\n\nEvaluates the stored Lua on this machine. Returns `revision`, sorted `topics`\n(name, enabled, normalized root, paths, hook presence), and manifest-level\nhook presence. Disabled topics are included. Hooks are not executed.\nLua is not sandboxed. This is configuration inspection, not a filesystem preview.\n\nDefault output is pretty-printed JSON; --json emits compact JSON and structured\nerrors. Evaluated output cannot round-trip expressions, comments, or functions.\nUse `manifest view` to obtain editable Lua source.\nExit status: 0 success, 1 failure, 2 usage error (not JSON)."
+    )]
+    Inspect {
+        /// Emit compact JSON results and structured errors
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -258,15 +307,6 @@ fn main() -> Result<()> {
             ui::muted(&format!("  {}", PorchettaStore::store_path()?));
         }
         Command::Manifest {
-            command: ManifestCommand::View,
-        } => {
-            let store = PorchettaStore::load().context("Failed to load store")?;
-            let manifest_bytes = store.read_manifest().context("Failed to load manifest")?;
-            let mut stdout = std::io::stdout().lock();
-            std::io::Write::write_all(&mut stdout, &manifest_bytes)
-                .context("Failed to write manifest to stdout")?;
-        }
-        Command::Manifest {
             command: ManifestCommand::Edit,
         } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
@@ -280,6 +320,7 @@ fn main() -> Result<()> {
                 .context("Failed to edit manifest")?;
             ui::success("Manifest updated");
         }
+        Command::Manifest { command } => manifest_cli::run(command)?,
         Command::Sync { dry_run, offline } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store, InteractiveResolver)
@@ -337,7 +378,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Manifest {
-                command: ManifestCommand::View
+                command: ManifestCommand::View { json: false }
             }
         ));
     }

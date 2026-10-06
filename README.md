@@ -140,6 +140,37 @@ For other editors, or for manifests edited outside `porchetta manifest edit`, us
 | `porchetta init` | Create a new store at `~/.porchetta`. |
 | `porchetta manifest edit` | Open `manifest.lua` in `$EDITOR`. |
 | `porchetta manifest view` | Print the current manifest to stdout. |
+| `porchetta manifest view --json` | Return Lua source and its SHA-256 revision. |
+| `porchetta manifest set --file PATH` | Validate and save Lua without an editor (or use `--stdin`). |
+| `porchetta manifest validate --file PATH` | Evaluate and validate without saving (or use `--stdin`). |
+| `porchetta manifest inspect --json` | Return evaluated topics and hook presence on this machine. |
+
+### Agent manifest workflow
+
+Read `manifest view --json` to obtain `source` and `revision`. Edit the source,
+then run `manifest validate --file manifest.lua --json` and
+`manifest set --file manifest.lua --if-revision REVISION --json`.
+The revision is the lowercase SHA-256 of the exact source bytes. Comparison and
+write happen under the store's exclusive lock. A stale revision rejects the
+write; reread and reconcile changes before retrying. Omitting `--if-revision`
+allows an unconditional replacement. These commands do not sync files or remotes.
+
+Validation evaluates Lua using the normal runtime and home-root normalization;
+it is not a sandbox and does not execute hooks to verify their behavior.
+Inspection shows evaluated values, not round-trippable source: expressions,
+comments and function bodies remain available through `view` only.
+
+`set`, `validate`, and `inspect` support `--json`. JSON goes to stdout; logging
+and error reporting go to stderr. Successful validation returns
+`{"valid":true,"errors":[]}`; unsuccessful validation returns `valid: false`
+with an `errors` array. Diagnostics have stable `code` and human-readable
+`message` fields, and validation diagnostics include nullable `topic`, `field`,
+and `value`. Codes are `lua_syntax_error`, `lua_runtime_error`, `invalid_field`,
+`invalid_path`, `revision_mismatch`, and `operation_failed`. Successful JSON writes
+return the new `revision`. Inspection returns `revision`, sorted `topics`
+(name, enabled, root, paths, hooks), and manifest-level `hooks`.
+Exit status is 0 on success, 1 on operation/validation failure, and 2 for CLI
+usage errors. Usage errors are reported by the CLI parser, not as JSON.
 | `porchetta sync` | Synchronize all topics and publish them to every configured remote. |
 | `porchetta sync --dry-run` | Preview what would change without applying. |
 | `porchetta sync --offline` | Synchronize locally without fetching from or pushing to any remote. |
