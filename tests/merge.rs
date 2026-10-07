@@ -633,3 +633,46 @@ fn test_tree_conflict_abort_returns_error() {
         "local\n"
     );
 }
+
+#[test]
+fn test_both_deleted_blob_does_not_conflict() {
+    let _guard = merge_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = PorchettaStore::init_at(&store_path).unwrap();
+
+    let manifest = br#"return {
+        topics = {
+            test = {
+                root = ".config/test",
+                paths = {"subdir"},
+            }
+        }
+    }"#;
+    store.write_manifest(manifest).unwrap();
+
+    let topic_dir = home.join(".config/test");
+    std::fs::create_dir_all(topic_dir.join("subdir")).unwrap();
+    std::fs::write(topic_dir.join("subdir/file.txt"), "content\n").unwrap();
+    std::fs::write(topic_dir.join("subdir/other.txt"), "other\n").unwrap();
+
+    let mut engine = PorchettaEngine::with_home(
+        store,
+        home.clone(),
+        porchetta::engine::resolver::PanickingResolver,
+    );
+    engine.sync(false, true).unwrap();
+
+    // Both sides delete the same blob while the directory itself is only
+    // modified locally: the local snapshot loses it (e.g. via a filter) and
+    // the remote branch deletes the whole directory.
+    std::fs::remove_file(topic_dir.join("subdir/file.txt")).unwrap();
+    commit_remote_change(engine.store(), "subdir/file.txt", None);
+    commit_remote_change(engine.store(), "subdir/other.txt", None);
+
+    engine.sync(false, false).unwrap();
+
+    assert!(!home.join(".config/test/subdir/file.txt").exists());
+    assert!(!home.join(".config/test/subdir/other.txt").exists());
+}

@@ -1,10 +1,16 @@
 use std::ops::ControlFlow;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use camino::Utf8PathBuf;
+use gix::error::ErrorExt as _;
 use gix::{ObjectId, object::tree::diff::Change};
 
 use super::path_util::diff_location_to_path;
+
+/// Convert an error into the error type expected by `gix` diff callbacks.
+fn to_exn(error: anyhow::Error) -> gix::Exn {
+    gix::Error::from_boxed(error.into()).raise_erased()
+}
 
 pub enum ApplyOperation {
     Upsert {
@@ -52,7 +58,7 @@ pub fn collect_apply_operations(
                 }
 
                 operations.push(ApplyOperation::Upsert {
-                    relative_path: diff_location_to_path(location)?,
+                    relative_path: diff_location_to_path(location).map_err(to_exn)?,
                     blob_oid: id.detach(),
                 });
             }
@@ -66,11 +72,13 @@ pub fn collect_apply_operations(
                 }
 
                 operations.push(ApplyOperation::Delete {
-                    relative_path: diff_location_to_path(location)?,
+                    relative_path: diff_location_to_path(location).map_err(to_exn)?,
                 });
             }
             Change::Rewrite { .. } => {
-                bail!("Rewrite operation encountered despite rewrite tracking being disabled");
+                return Err(to_exn(anyhow!(
+                    "Rewrite operation encountered despite rewrite tracking being disabled"
+                )));
             }
         }
 

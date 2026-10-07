@@ -25,7 +25,7 @@ pub(super) fn create_table(lua: &Lua) -> mlua::Result<Table> {
     clippy::needless_pass_by_value,
     reason = "mlua callback arguments are received by value"
 )]
-fn decode(lua: &Lua, content: mlua::String) -> mlua::Result<Value> {
+fn decode(lua: &Lua, content: mlua::LuaString) -> mlua::Result<Value> {
     let content = content.to_str()?;
     let value: serde_json::Value = serde_json::from_str(content.as_ref())
         .map_err(|e| mlua::Error::RuntimeError(format!("porchetta.json.decode: {e}")))?;

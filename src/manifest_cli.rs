@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result, bail};
@@ -32,7 +33,12 @@ impl ManifestInput {
 }
 
 fn revision(source: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(source))
+    Sha256::digest(source)
+        .iter()
+        .fold(String::new(), |mut revision, byte| {
+            write!(revision, "{byte:02x}").expect("writing to a String cannot fail");
+            revision
+        })
 }
 
 #[cfg(test)]

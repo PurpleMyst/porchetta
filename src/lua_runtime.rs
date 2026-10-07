@@ -18,7 +18,7 @@ use mlua::{Lua, Table};
 /// - the command cannot be spawned,
 /// - writing to stdin fails, or
 /// - the command exits with a non-zero status.
-fn system(lua: &Lua, (args, stdin): (Table, Option<String>)) -> mlua::Result<mlua::String> {
+fn system(lua: &Lua, (args, stdin): (Table, Option<String>)) -> mlua::Result<mlua::LuaString> {
     let args: Vec<String> = args
         .sequence_values::<String>()
         .collect::<mlua::Result<_>>()?;
@@ -79,7 +79,7 @@ fn system(lua: &Lua, (args, stdin): (Table, Option<String>)) -> mlua::Result<mlu
 /// # Errors
 ///
 /// Returns a Lua runtime error if the hostname cannot be determined.
-fn hostname(lua: &Lua, _: ()) -> mlua::Result<mlua::String> {
+fn hostname(lua: &Lua, _: ()) -> mlua::Result<mlua::LuaString> {
     let hostname = ::hostname::get().map_err(|e| {
         mlua::Error::RuntimeError(format!("porchetta.hostname: failed to get hostname: {e}"))
     })?;

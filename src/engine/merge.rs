@@ -69,11 +69,10 @@ pub fn is_ancestor(
     ancestor: gix::ObjectId,
     descendant: gix::ObjectId,
 ) -> Result<bool> {
-    match repo.merge_base(ancestor, descendant) {
-        Ok(base) => Ok(base == ancestor),
-        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
+    Ok(repo
+        .merge_bases_many(ancestor, &[descendant])?
+        .first()
+        .is_some_and(|base| *base == ancestor))
 }
 
 /// Iterate over unresolved conflicts in `outcome` and resolve them using `resolver`.

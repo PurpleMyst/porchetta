@@ -337,20 +337,17 @@ impl PorchettaStore {
     /// Gets the head commit for a full ref name, or `None` if it does not exist.
     fn ref_head(&self, ref_name: &str) -> Result<Option<gix::ObjectId>> {
         trace!("Looking up branch head for '{ref_name}'");
-        match self.repo.find_reference(ref_name) {
-            Ok(reference) => Ok(Some(
-                reference
-                    .target()
-                    .try_id()
-                    .context("Reference does not point to an object id")?
-                    .to_owned(),
-            )),
-            Err(gix::reference::find::existing::Error::NotFound { .. }) => {
-                debug!("Branch '{ref_name}' not found");
-                Ok(None)
-            }
-            Err(e) => Err(e.into()),
-        }
+        let Some(reference) = self.repo.try_find_reference(ref_name)? else {
+            debug!("Branch '{ref_name}' not found");
+            return Ok(None);
+        };
+        Ok(Some(
+            reference
+                .target()
+                .try_id()
+                .context("Reference does not point to an object id")?
+                .to_owned(),
+        ))
     }
 
     /// Updates multiple local branch heads in one reference transaction.
