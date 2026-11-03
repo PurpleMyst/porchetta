@@ -1,26 +1,24 @@
 use anyhow::{Context, Result, bail};
 use camino::Utf8Path;
-use gix::ObjectId;
 
-use super::diff::ApplyOperation;
+use super::diff::{ChangeKind, FileChange};
+use crate::manifest::Topic;
 
-/// Validate that `operations` can be applied to the filesystem under `topic_base`.
+/// Validate that `changes` can be applied to the filesystem under `topic_base`.
 fn validate_operations(
     topic_base: &Utf8Path,
     topic_name: &str,
-    operations: &[ApplyOperation],
+    changes: &[FileChange],
 ) -> Result<()> {
-    for operation in operations {
-        match operation {
-            ApplyOperation::Upsert { relative_path, .. } => {
-                let abs_path = topic_base.join(relative_path);
-
+    for change in changes {
+        let abs_path = topic_base.join(&change.relative_path);
+        match change.kind {
+            ChangeKind::Add(_) | ChangeKind::Update(_) => {
                 if abs_path.is_dir() {
                     bail!(
                         "Topic '{topic_name}' cannot write file '{abs_path}' because it is a directory"
                     );
                 }
-
                 if let Some(parent) = abs_path.parent()
                     && parent.is_file()
                 {
@@ -29,8 +27,7 @@ fn validate_operations(
                     );
                 }
             }
-            ApplyOperation::Delete { relative_path } => {
-                let abs_path = topic_base.join(relative_path);
+            ChangeKind::Delete => {
                 if abs_path.is_dir() {
                     bail!(
                         "Topic '{topic_name}' cannot delete '{abs_path}' as a file because it is a directory"
@@ -39,35 +36,23 @@ fn validate_operations(
             }
         }
     }
-
     Ok(())
 }
 
-/// Apply `operations` to the filesystem under `topic_base`.
-///
-/// `to_system` is called for every upsert to transform content before writing.
-/// `read_blob` is called to resolve blob OIDs into bytes.
-///
-/// # Errors
-///
-/// Returns an error if any filesystem operation fails.
+/// Apply `changes` for `topic` to the filesystem under `topic_base`.
 pub fn apply(
+    repo: &gix::Repository,
+    topic: &Topic,
     topic_base: &Utf8Path,
-    topic_name: &str,
-    operations: Vec<ApplyOperation>,
-    mut to_system: impl FnMut(&str, &[u8]) -> Result<Vec<u8>>,
-    mut read_blob: impl FnMut(ObjectId) -> Result<Vec<u8>>,
+    changes: &[FileChange],
 ) -> Result<()> {
-    validate_operations(topic_base, topic_name, &operations)?;
+    let topic_name = &topic.name;
+    validate_operations(topic_base, topic_name, changes)?;
 
-    for operation in operations {
-        match operation {
-            ApplyOperation::Upsert {
-                relative_path,
-                blob_oid,
-            } => {
-                let abs_path = topic_base.join(&relative_path);
-
+    for change in changes {
+        let abs_path = topic_base.join(&change.relative_path);
+        match change.kind {
+            ChangeKind::Add(blob_oid) | ChangeKind::Update(blob_oid) => {
                 if let Some(parent) = abs_path.parent() {
                     std::fs::create_dir_all(parent).with_context(|| {
                         format!(
@@ -75,18 +60,15 @@ pub fn apply(
                         )
                     })?;
                 }
-
-                let content = read_blob(blob_oid).with_context(|| {
+                let blob = repo.find_blob(blob_oid).with_context(|| {
                     format!("Failed to read blob '{blob_oid}' for topic '{topic_name}'")
                 })?;
-
-                let content = to_system(relative_path.as_str(), &content)?;
+                let content = topic.to_system(change.relative_path.as_str(), &blob.data)?;
                 std::fs::write(&abs_path, content).with_context(|| {
                     format!("Failed to write '{abs_path}' for topic '{topic_name}'")
                 })?;
             }
-            ApplyOperation::Delete { relative_path } => {
-                let abs_path = topic_base.join(relative_path);
+            ChangeKind::Delete => {
                 if abs_path.exists() {
                     std::fs::remove_file(&abs_path).with_context(|| {
                         format!("Failed to delete '{abs_path}' for topic '{topic_name}'")

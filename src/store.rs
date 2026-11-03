@@ -334,6 +334,30 @@ impl PorchettaStore {
         self.ref_head(&branch.ref_name())
     }
 
+    /// Returns the tree OID for `head`, or the empty tree OID when `head` is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `head` cannot be resolved to a tree.
+    pub fn tree_oid_at(&self, head: Option<gix::ObjectId>) -> Result<gix::ObjectId> {
+        match head {
+            Some(head) => Ok(self.repo.find_object(head)?.peel_to_tree()?.id().into()),
+            None => Ok(self.repo.empty_tree().id().into()),
+        }
+    }
+
+    /// Returns the fetched head of `branch` on each remote that has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any remote tracking reference cannot be read.
+    pub fn remote_heads(&self, remotes: &[Remote], branch: &Branch) -> Result<Vec<gix::ObjectId>> {
+        remotes
+            .iter()
+            .filter_map(|remote| self.remote_head(remote, branch).transpose())
+            .collect()
+    }
+
     /// Gets the head commit for a full ref name, or `None` if it does not exist.
     fn ref_head(&self, ref_name: &str) -> Result<Option<gix::ObjectId>> {
         trace!("Looking up branch head for '{ref_name}'");

@@ -119,34 +119,26 @@ impl Topic {
         }
     }
 
+    /// Returns the base directory on disk for this topic under `home`.
+    #[must_use]
+    pub fn base_dir(&self, home: &Utf8Path) -> Utf8PathBuf {
+        self.root
+            .as_ref()
+            .map_or_else(|| home.to_owned(), |root| home.join(root))
+    }
+
     /// Run the `should_include` hook, returning whether a path should be included.
     ///
     /// # Errors
     ///
     /// Returns an error if the hook call fails or returns a non-boolean value.
     pub fn should_include(&self, path: &str) -> Result<bool> {
-        match &self.should_include {
-            Some(func) => {
-                let path_arg = self.lua.create_string(path).with_context(|| {
-                    "Failed to create path string for should_include".to_string()
-                })?;
-                let result: Value = func.call(path_arg).with_context(|| {
-                    format!(
-                        "should_include hook for topic '{}' on '{path}' failed",
-                        self.name
-                    )
-                })?;
-                match result {
-                    Value::Boolean(b) => Ok(b),
-                    other => bail!(
-                        "topic '{}': should_include for '{path}' must return a boolean, got {}",
-                        self.name,
-                        other.type_name()
-                    ),
-                }
-            }
-            None => Ok(true),
-        }
+        run_include_hook(
+            &self.lua,
+            self.should_include.as_ref(),
+            &format!("topic '{}'", self.name),
+            path,
+        )
     }
 
     fn validate(&self) -> Result<()> {
@@ -221,6 +213,30 @@ fn normalize_root_under_home(root: &mut Option<Utf8PathBuf>, home: Option<&Utf8P
     }
 }
 
+fn run_include_hook(
+    lua: &Lua,
+    hook: Option<&mlua::Function>,
+    scope: &str,
+    path: &str,
+) -> Result<bool> {
+    let Some(func) = hook else {
+        return Ok(true);
+    };
+    let path_arg = lua
+        .create_string(path)
+        .with_context(|| format!("Failed to create path string for {scope} should_include"))?;
+    let result: Value = func
+        .call(path_arg)
+        .with_context(|| format!("{scope} should_include for '{path}' failed"))?;
+    match result {
+        Value::Boolean(b) => Ok(b),
+        other => bail!(
+            "{scope} should_include for '{path}' must return a boolean, got {}",
+            other.type_name()
+        ),
+    }
+}
+
 impl Manifest {
     /// Run the manifest-level `should_include` hook, returning whether a path should be included.
     ///
@@ -228,24 +244,21 @@ impl Manifest {
     ///
     /// Returns an error if the hook call fails or returns a non-boolean value.
     pub fn should_include(&self, path: &str) -> Result<bool> {
-        match &self.should_include {
-            Some(func) => {
-                let path_arg = self.lua.create_string(path).with_context(|| {
-                    "Failed to create path string for manifest should_include".to_string()
-                })?;
-                let result: Value = func.call(path_arg).with_context(|| {
-                    format!("manifest-level should_include for '{path}' failed")
-                })?;
-                match result {
-                    Value::Boolean(b) => Ok(b),
-                    other => bail!(
-                        "manifest-level should_include for '{path}' must return a boolean, got {}",
-                        other.type_name()
-                    ),
-                }
-            }
-            None => Ok(true),
-        }
+        run_include_hook(
+            &self.lua,
+            self.should_include.as_ref(),
+            "manifest-level",
+            path,
+        )
+    }
+
+    /// Returns whether `path` is included by both the manifest-level and topic-level hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either hook fails or returns a non-boolean value.
+    pub fn includes(&self, topic: &Topic, path: &str) -> Result<bool> {
+        Ok(self.should_include(path)? && topic.should_include(path)?)
     }
 
     /// Loads a manifest from the given manifest content.

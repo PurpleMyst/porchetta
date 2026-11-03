@@ -1,8 +1,7 @@
-pub mod apply;
-pub mod capture;
-pub mod diff;
+mod apply;
+mod capture;
+mod diff;
 pub mod merge;
-pub mod path_util;
 pub mod resolver;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,12 +20,6 @@ pub struct PorchettaEngine {
     store: PorchettaStore,
     home: Utf8PathBuf,
     resolver: Box<dyn ConflictResolver>,
-}
-
-struct SyncTopicResult {
-    status: SyncTopicStatus,
-    stored: usize,
-    applied: usize,
 }
 
 /// The three trees involved in a topic sync: the filesystem snapshot, the
@@ -50,39 +43,29 @@ enum Reconciled {
 }
 
 impl Reconciled {
-    fn head(&self) -> Option<gix::ObjectId> {
+    fn head(self) -> Option<gix::ObjectId> {
         match self {
-            Self::Head(head) => Some(*head),
+            Self::Head(head) => Some(head),
             Self::NoHistory | Self::Conflict => None,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-enum SyncTopicStatus {
-    Unchanged,
-    WouldCapture,
-    WouldApply,
-    WouldCaptureAndApply,
-    Conflict,
-    Captured,
-    Applied,
-    CapturedAndApplied,
+const fn status_label(dry_run: bool, captured: bool, applied: bool) -> &'static str {
+    match (dry_run, captured, applied) {
+        (true, true, true) => "would capture and apply",
+        (true, true, false) => "would capture",
+        (true, false, true) => "would apply",
+        (_, false, false) => "unchanged",
+        (false, true, true) => "captured and applied",
+        (false, true, false) => "captured",
+        (false, false, true) => "applied",
+    }
 }
 
-impl SyncTopicStatus {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Unchanged => "unchanged",
-            Self::WouldCapture => "would capture",
-            Self::WouldApply => "would apply",
-            Self::WouldCaptureAndApply => "would capture and apply",
-            Self::Conflict => "conflict",
-            Self::Captured => "captured",
-            Self::Applied => "applied",
-            Self::CapturedAndApplied => "captured and applied",
-        }
-    }
+fn format_change_count(verb: &str, count: usize, target: &str) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{verb} {count} file change{plural} {target}")
 }
 
 #[derive(Default)]
@@ -96,18 +79,20 @@ struct SyncSummary {
 }
 
 impl SyncSummary {
-    fn record(&mut self, status: SyncTopicStatus) {
+    fn record_conflict(&mut self) {
         self.total += 1;
-        match status {
-            SyncTopicStatus::Unchanged => self.unchanged += 1,
-            SyncTopicStatus::Conflict => self.conflicts += 1,
-            SyncTopicStatus::WouldCapture
-            | SyncTopicStatus::WouldApply
-            | SyncTopicStatus::WouldCaptureAndApply
-            | SyncTopicStatus::Captured
-            | SyncTopicStatus::Applied
-            | SyncTopicStatus::CapturedAndApplied => self.changed += 1,
+        self.conflicts += 1;
+    }
+
+    fn record_synced(&mut self, stored: usize, applied: usize, changed: bool) {
+        self.total += 1;
+        if changed {
+            self.changed += 1;
+        } else {
+            self.unchanged += 1;
         }
+        self.stored += stored;
+        self.applied += applied;
     }
 
     fn print(&self, dry_run: bool) {
@@ -184,7 +169,6 @@ impl PorchettaEngine {
         debug!("Starting manifest edit");
         let manifest_content = self.store.read_manifest()?;
         let new_manifest_content = editor(&manifest_content)?;
-        // Validate the edited manifest before writing
         Manifest::load_with_home(&new_manifest_content, Some(&self.home))
             .context("Edited manifest is invalid")?;
         self.store.write_manifest(&new_manifest_content)?;
@@ -274,7 +258,7 @@ impl PorchettaEngine {
                 .copied()
                 .with_context(|| format!("Topic '{}' was not reconciled", info.name))?;
             if matches!(state, Reconciled::Conflict) {
-                summary.record(SyncTopicStatus::Conflict);
+                summary.record_conflict();
                 Self::report_topic(
                     &manifest,
                     &info.name,
@@ -283,10 +267,7 @@ impl PorchettaEngine {
                 );
                 continue;
             }
-            let result = self.sync_topic(&manifest, info, &hostname, dry_run, state)?;
-            summary.record(result.status);
-            summary.stored += result.stored;
-            summary.applied += result.applied;
+            self.sync_topic(&manifest, info, &hostname, dry_run, state, &mut summary)?;
         }
         if !filtered_topics.is_empty() {
             let names: Vec<_> = filtered_topics.iter().map(|t| t.name.as_str()).collect();
@@ -313,7 +294,7 @@ impl PorchettaEngine {
         dry_run: bool,
     ) -> Result<(gix::ObjectId, Manifest)> {
         let local_manifest = self.store.head(&Branch::Manifest)?;
-        let remote_manifest_heads = self.remote_heads(remotes, &Branch::Manifest)?;
+        let remote_manifest_heads = self.store.remote_heads(remotes, &Branch::Manifest)?;
         let manifest_head = match self.reconcile_head(
             "manifest",
             local_manifest,
@@ -344,7 +325,7 @@ impl PorchettaEngine {
         for topic in topics {
             let branch = Branch::topic(&topic.name);
             let local_topic_head = self.store.head(&branch)?;
-            let remote_heads = self.remote_heads(remotes, &branch)?;
+            let remote_heads = self.store.remote_heads(remotes, &branch)?;
             let state = self.reconcile_head(
                 &format!("topic/{}", topic.name),
                 local_topic_head,
@@ -412,29 +393,22 @@ impl PorchettaEngine {
         hostname: &str,
         dry_run: bool,
         reconciled: Reconciled,
-    ) -> Result<SyncTopicResult> {
+        summary: &mut SyncSummary,
+    ) -> Result<()> {
         let name = &info.name;
         debug!("Syncing topic '{name}'");
-        let topic_base = if let Some(root) = &info.root {
-            self.home.join(root)
-        } else {
-            self.home.clone()
-        };
+        let topic_base = info.base_dir(&self.home);
 
         let Some(trees) =
             self.merge_topic_trees(manifest, info, hostname, &topic_base, reconciled, dry_run)?
         else {
-            return Ok(SyncTopicResult {
-                status: SyncTopicStatus::Conflict,
-                stored: 0,
-                applied: 0,
-            });
+            summary.record_conflict();
+            return Ok(());
         };
 
         let changed_wrt_repo =
             matches!(reconciled, Reconciled::NoHistory) || trees.merged != trees.theirs;
         let changed_wrt_system = trees.merged != trees.ours;
-        let status = Self::topic_sync_status(dry_run, changed_wrt_repo, changed_wrt_system);
         let merged_tree = self.store.repo().find_tree(trees.merged)?;
         let store_changes = self::diff::collect_file_changes(
             &self.store.repo().find_tree(trees.theirs)?,
@@ -445,25 +419,26 @@ impl PorchettaEngine {
             &merged_tree,
         )?;
 
-        self.commit_repo_change(name, hostname, changed_wrt_repo, trees.merged, dry_run)?;
-        if let Err(error) = self.apply_system_change(
-            info,
-            &topic_base,
-            changed_wrt_system,
-            trees.ours,
-            trees.merged,
-            dry_run,
-        ) {
-            if changed_wrt_repo && !dry_run {
+        if changed_wrt_repo && !dry_run {
+            self.store.commit_topic_tree(
+                name,
+                hostname,
+                trees.merged,
+                format!("Sync topic '{name}' from '{hostname}'"),
+            )?;
+        }
+        if changed_wrt_system
+            && !dry_run
+            && let Err(error) =
+                self::apply::apply(self.store.repo(), info, &topic_base, &machine_changes)
+                    .with_context(|| format!("Failed to apply changes for topic '{name}'"))
+        {
+            if changed_wrt_repo {
                 Self::report_topic(
                     manifest,
                     name,
                     "captured",
-                    &format!(
-                        "Captured {} file change{} into store",
-                        store_changes.len(),
-                        if store_changes.len() == 1 { "" } else { "s" }
-                    ),
+                    &format_change_count("Captured", store_changes.len(), "into store"),
                 );
                 self.print_file_changes(&store_changes, None);
             }
@@ -475,25 +450,22 @@ impl PorchettaEngine {
 
         let mut details = Vec::new();
         if changed_wrt_repo {
-            details.push(format!(
-                "{} {} file change{} into store",
-                if dry_run { "Would capture" } else { "Captured" },
-                store_changes.len(),
-                if store_changes.len() == 1 { "" } else { "s" }
-            ));
+            let verb = if dry_run { "Would capture" } else { "Captured" };
+            details.push(format_change_count(verb, store_changes.len(), "into store"));
         }
         if changed_wrt_system {
-            details.push(format!(
-                "{} {} file change{} to machine",
-                if dry_run { "Would apply" } else { "Applied" },
+            let verb = if dry_run { "Would apply" } else { "Applied" };
+            details.push(format_change_count(
+                verb,
                 machine_changes.len(),
-                if machine_changes.len() == 1 { "" } else { "s" }
+                "to machine",
             ));
         }
         if details.is_empty() {
             details.push("Unchanged".into());
         }
-        Self::report_topic(manifest, name, status.label(), &details.join(" · "));
+        let status = status_label(dry_run, changed_wrt_repo, changed_wrt_system);
+        Self::report_topic(manifest, name, status, &details.join(" · "));
         self.print_file_changes(&store_changes, None);
         self.print_file_changes(&machine_changes, Some(&topic_base));
 
@@ -502,11 +474,12 @@ impl PorchettaEngine {
         }
 
         info!("Synchronized topic '{name}'");
-        Ok(SyncTopicResult {
-            status,
-            stored: store_changes.len(),
-            applied: machine_changes.len(),
-        })
+        summary.record_synced(
+            store_changes.len(),
+            machine_changes.len(),
+            changed_wrt_repo || changed_wrt_system,
+        );
+        Ok(())
     }
 
     fn print_file_changes(
@@ -520,9 +493,9 @@ impl PorchettaEngine {
                 let display = path
                     .strip_prefix(&self.home)
                     .map_or_else(|_| path.to_string(), |relative| format!("~/{relative}"));
-                ui::file_change("Machine", change.action, &display);
+                ui::file_change("Machine", change.action(), &display);
             } else {
-                ui::file_change("Store", change.action, change.relative_path.as_str());
+                ui::file_change("Store", change.action(), change.relative_path.as_str());
             }
         }
     }
@@ -541,23 +514,10 @@ impl PorchettaEngine {
         dry_run: bool,
     ) -> Result<Option<TopicTrees>> {
         let name = &info.name;
-        let ours = self::capture::snapshot_topic(
-            self.store.repo(),
-            topic_base,
-            &info.paths,
-            |rel| {
-                Ok(manifest
-                    .should_include(rel)
-                    .with_context(|| format!("manifest-level should_include failed for '{rel}'"))?
-                    && info.should_include(rel).with_context(|| {
-                        format!("topic-level should_include failed for '{rel}'")
-                    })?)
-            },
-            |rel, content| info.to_repo(rel, content),
-        )?;
-        let theirs = self.tree_oid_at(reconciled.head())?;
+        let ours = self::capture::snapshot_topic(self.store.repo(), manifest, info, topic_base)?;
+        let theirs = self.store.tree_oid_at(reconciled.head())?;
         let system_head = self.store.head(&Branch::system(hostname, name))?;
-        let base = self.tree_oid_at(system_head)?;
+        let base = self.store.tree_oid_at(system_head)?;
         let mut merge_outcome =
             self::merge::merge_trees(self.store.repo(), base, ours, theirs, name)?;
 
@@ -585,107 +545,6 @@ impl PorchettaEngine {
         }))
     }
 
-    /// Commits the merged tree to the topic branch when it differs from the repo state.
-    fn commit_repo_change(
-        &self,
-        name: &str,
-        hostname: &str,
-        changed: bool,
-        merged: gix::ObjectId,
-        dry_run: bool,
-    ) -> Result<()> {
-        if !changed {
-            debug!("Topic '{name}' has no changes from repo");
-            return Ok(());
-        }
-        if dry_run {
-            return Ok(());
-        }
-        self.store.commit_topic_tree(
-            name,
-            hostname,
-            merged,
-            format!("Sync topic '{name}' from '{hostname}'"),
-        )?;
-        Ok(())
-    }
-
-    /// Applies the merged tree to the filesystem when it differs from the system state.
-    fn apply_system_change(
-        &self,
-        info: &crate::manifest::Topic,
-        topic_base: &camino::Utf8Path,
-        changed: bool,
-        ours: gix::ObjectId,
-        merged: gix::ObjectId,
-        dry_run: bool,
-    ) -> Result<()> {
-        if !changed {
-            return Ok(());
-        }
-        let name = &info.name;
-        let our_tree = self.store.repo().find_tree(ours)?;
-        let merged_tree = self.store.repo().find_tree(merged)?;
-        let operations = self::diff::collect_apply_operations(&our_tree, &merged_tree)
-            .with_context(|| format!("Failed to compute apply operations for topic '{name}'"))?;
-
-        if dry_run {
-            return Ok(());
-        }
-
-        self::apply::apply(
-            topic_base,
-            name,
-            operations,
-            |rel, content| info.to_system(rel, content),
-            |oid| {
-                self.store
-                    .repo()
-                    .find_blob(oid)
-                    .map(|b| b.data.clone())
-                    .map_err(Into::into)
-            },
-        )
-        .with_context(|| format!("Failed to apply changes for topic '{name}'"))
-    }
-
-    fn tree_oid_at(&self, head: Option<gix::ObjectId>) -> Result<gix::ObjectId> {
-        match head {
-            Some(head) => Ok(self
-                .store
-                .repo()
-                .find_object(head)?
-                .peel_to_tree()?
-                .id()
-                .into()),
-            None => Ok(self.store.repo().empty_tree().id().into()),
-        }
-    }
-
-    fn topic_sync_status(
-        dry_run: bool,
-        changed_wrt_repo: bool,
-        changed_wrt_system: bool,
-    ) -> SyncTopicStatus {
-        match (dry_run, changed_wrt_repo, changed_wrt_system) {
-            (true, true, true) => SyncTopicStatus::WouldCaptureAndApply,
-            (true, true, false) => SyncTopicStatus::WouldCapture,
-            (true, false, true) => SyncTopicStatus::WouldApply,
-            (_, false, false) => SyncTopicStatus::Unchanged,
-            (false, true, true) => SyncTopicStatus::CapturedAndApplied,
-            (false, true, false) => SyncTopicStatus::Captured,
-            (false, false, true) => SyncTopicStatus::Applied,
-        }
-    }
-
-    /// Returns the fetched head of `branch` on each remote that has one.
-    fn remote_heads(&self, remotes: &[Remote], branch: &Branch) -> Result<Vec<gix::ObjectId>> {
-        remotes
-            .iter()
-            .filter_map(|remote| self.store.remote_head(remote, branch).transpose())
-            .collect()
-    }
-
     /// Integrates the local and remote heads of one branch into a single head.
     ///
     /// Heads already contained in another head's history are skipped; the rest are
@@ -699,22 +558,17 @@ impl PorchettaEngine {
         hostname: &str,
         dry_run: bool,
     ) -> Result<Reconciled> {
-        // A head that is an ancestor of another head is already contained in it.
         let mut heads: BTreeSet<_> = local.into_iter().chain(remote_heads).collect();
         let all: Vec<_> = heads.iter().copied().collect();
-        let mut contained = BTreeSet::new();
         for candidate in &all {
             for other in &all {
                 if candidate != other
                     && self::merge::is_ancestor(self.store.repo(), *candidate, *other)?
                 {
-                    contained.insert(*candidate);
+                    heads.remove(candidate);
                     break;
                 }
             }
-        }
-        for head in contained {
-            heads.remove(&head);
         }
 
         // Integrate the local head first so merges read as local-vs-remote.

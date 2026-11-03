@@ -1,6 +1,8 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(unix)]
+use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use porchetta::store::PorchettaStore;
 #[cfg(unix)]
 use std::io::Write;
@@ -144,6 +146,7 @@ fn utf8(path: std::path::PathBuf) -> Utf8PathBuf {
     Utf8PathBuf::try_from(path).expect("test path should be valid UTF-8")
 }
 
+#[cfg(unix)]
 fn lock_error(store_path: &Utf8Path) -> String {
     match PorchettaStore::load_at(store_path) {
         Ok(store) => {

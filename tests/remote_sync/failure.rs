@@ -161,7 +161,7 @@ fn non_fast_forward_race_is_reported_without_forcing() {
     let wrapper = install_receive_pack_race(&temp, &origin_path, raced);
     run_git(
         &local_path,
-        &["config", "remote.origin.receivepack", wrapper.as_str()],
+        &["config", "remote.origin.receivepack", &wrapper],
     );
 
     fs::write(home.join(".config/test/config.txt"), "local writer\n").unwrap();

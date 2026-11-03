@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::{
     Arc, Mutex, MutexGuard,
@@ -264,9 +263,13 @@ pub fn install_reject_topic_hook(repo: &Utf8Path, topic: &str) -> Utf8PathBuf {
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&hook).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&hook, permissions).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&hook, permissions).unwrap();
+    }
     hook
 }
 
@@ -274,17 +277,22 @@ pub fn install_receive_pack_race(
     temp: &tempfile::TempDir,
     origin_path: &Utf8Path,
     raced: gix::ObjectId,
-) -> Utf8PathBuf {
+) -> String {
     let wrapper = path(temp, "receive-pack-race.sh");
+    let origin = origin_path.as_str().replace('\\', "/");
     fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\ngit --git-dir='{origin_path}' update-ref refs/heads/topic/test {raced}\nexec git-receive-pack \"$@\"\n"
+            "#!/bin/sh\ngit --git-dir='{origin}' update-ref refs/heads/topic/test {raced}\nexec git-receive-pack \"$@\"\n"
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper, permissions).unwrap();
-    wrapper
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper, permissions).unwrap();
+    }
+    wrapper.as_str().replace('\\', "/")
 }
