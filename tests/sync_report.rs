@@ -96,6 +96,13 @@ impl Fixture {
             .unwrap();
     }
 
+    fn head(&self, branch: &Branch) -> Option<gix::ObjectId> {
+        PorchettaStore::load_at(&self.store)
+            .unwrap()
+            .head(branch)
+            .unwrap()
+    }
+
     fn mixed_changes(&self) {
         std::fs::write(self.home.join(".config/demo/local-update"), "local\n").unwrap();
         std::fs::remove_file(self.home.join(".config/demo/local-delete")).unwrap();
@@ -346,4 +353,60 @@ fn topic_statuses_align_after_the_longest_enabled_name() {
         );
         assert!(!report.contains("disabled_topic_with_a_much_longer_name"));
     }
+}
+
+#[test]
+fn filtered_sync_only_touches_the_named_topic() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.home.join(".config/demo/local-update"), "changed\n").unwrap();
+    std::fs::write(fixture.home.join(".bashrc"), "changed\n").unwrap();
+    let (config, shell) = (Branch::topic("config"), Branch::topic("shell"));
+    let (config_before, shell_before) = (fixture.head(&config), fixture.head(&shell));
+
+    let report = fixture.success(&["sync", "--offline", "--dry-run", "-t", "config"]);
+    assert!(report.contains("Topics selected: config"), "{report}");
+    assert!(report.contains("Would capture"), "{report}");
+    assert!(
+        report.contains("Filtered out 1 topic(s): shell"),
+        "{report}"
+    );
+    assert_eq!(fixture.head(&config), config_before);
+    assert_eq!(fixture.head(&shell), shell_before);
+
+    fixture.success(&["sync", "--offline", "-t", "config"]);
+    assert_ne!(fixture.head(&config), config_before);
+    assert_eq!(fixture.head(&shell), shell_before);
+
+    let report = fixture.success(&[
+        "sync",
+        "--offline",
+        "--dry-run",
+        "-t",
+        "config",
+        "-t",
+        "shell",
+    ]);
+    assert!(
+        report.contains("Topics selected: config, shell"),
+        "{report}"
+    );
+    assert!(!report.contains("Filtered out"), "{report}");
+}
+
+#[test]
+fn unknown_topic_fails_before_syncing_and_lists_defined_topics() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.home.join(".config/demo/local-update"), "changed\n").unwrap();
+    let config = Branch::topic("config");
+    let before = fixture.head(&config);
+
+    let output = fixture.run(&["sync", "--offline", "-t", "nope"]);
+    assert!(!output.status.success());
+    let report = String::from_utf8(output.stderr).unwrap();
+    assert!(report.contains("Unknown topic(s) nope"), "{report}");
+    assert!(
+        report.contains("Manifest defines: config, shell"),
+        "{report}"
+    );
+    assert_eq!(fixture.head(&config), before);
 }

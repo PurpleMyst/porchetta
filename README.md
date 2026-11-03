@@ -172,6 +172,7 @@ return the new `revision`. Inspection returns `revision`, sorted `topics`
 Exit status is 0 on success, 1 on operation/validation failure, and 2 for CLI
 usage errors. Usage errors are reported by the CLI parser, not as JSON.
 | `porchetta sync` | Synchronize all topics and publish them to every configured remote. |
+| `porchetta sync --topic <NAME>` | Limit capture, apply, and publication to the named topics. Repeat the flag for more than one topic. |
 | `porchetta sync --dry-run` | Preview what would change without applying. |
 | `porchetta sync --offline` | Synchronize locally without fetching from or pushing to any remote. |
 | `porchetta clone <url>` | Clone a remote store. Run `sync` next. |
@@ -244,6 +245,12 @@ It performs a three-way merge of these trees. The result is:
 - **Recorded** as the new base for this hostname.
 
 With `sync --offline`, Porchetta skips fetching, remote-history reconciliation, and publishing, but still performs this local filesystem synchronization using the local store state.
+
+### Topic filter
+
+`sync --topic <NAME>` (or `-t`) limits local synchronization to the named topics; repeat the flag for more than one. Topics that are not named are not captured, applied, or reconciled against fetched remote histories, and the report lists them as filtered out. An unknown name fails before any topic is synchronized and the error lists the manifest's topics.
+
+Publication follows the filter: a successful filtered sync pushes the manifest and the selected topic branches, leaving unselected branches untouched on every remote.
 
 ### Dry-run guarantees
 

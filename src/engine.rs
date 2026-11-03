@@ -200,7 +200,22 @@ impl PorchettaEngine {
     /// cannot be loaded, if hostname cannot be obtained, or if any file system operation,
     /// git operation, or conflict resolution fails.
     pub fn sync(&mut self, dry_run: bool, offline: bool) -> Result<()> {
+        self.sync_topics(dry_run, offline, &[])
+    }
+
+    /// Synchronizes only `topics`; an empty slice synchronizes every topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a named topic is unknown or synchronization fails.
+    pub fn sync_topics(&mut self, dry_run: bool, offline: bool, topics: &[String]) -> Result<()> {
         debug!("Starting sync operation");
+        let selected: Vec<&str> = topics
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
 
         let remotes = if offline {
             Vec::new()
@@ -219,59 +234,41 @@ impl PorchettaEngine {
             .into_owned();
         debug!("Detected hostname: {hostname}");
         ui::sync_header(&hostname, dry_run, offline, remotes.len());
+        if !selected.is_empty() {
+            ui::info(&format!("  Topics selected: {}", selected.join(", ")));
+        }
         ui::header("Topics");
 
-        let local_manifest = self.store.head(&Branch::Manifest)?;
-        let remote_manifest_heads = self.remote_heads(&remotes, &Branch::Manifest)?;
-        let manifest_head = match self.reconcile_head(
-            "manifest",
-            local_manifest,
-            remote_manifest_heads,
-            &hostname,
-            dry_run,
-        )? {
-            Reconciled::Head(head) => head,
-            Reconciled::NoHistory => bail!("Manifest branch has no head"),
-            Reconciled::Conflict => bail!("Interactive sync is required to reconcile manifest"),
-        };
-        let manifest_bytes = self.store.read_manifest_at(manifest_head)?;
-        let manifest = Manifest::load_with_home(&manifest_bytes, Some(&self.home))
-            .context("Reconciled manifest is invalid")?;
-        info!("Loaded manifest with {} topics", manifest.topics.len());
-
-        let mut reconciled_topics = BTreeMap::new();
-        for topic in &manifest.topics {
-            let branch = Branch::topic(&topic.name);
-            let local_topic_head = self.store.head(&branch)?;
-            let remote_heads = self.remote_heads(&remotes, &branch)?;
-            let state = self.reconcile_head(
-                &format!("topic/{}", topic.name),
-                local_topic_head,
-                remote_heads,
-                &hostname,
-                dry_run,
-            )?;
-            reconciled_topics.insert(topic.name.clone(), state);
+        let (manifest_head, manifest) = self.reconcile_manifest(&remotes, &hostname, dry_run)?;
+        let defined: Vec<&str> = manifest.topics.iter().map(|t| t.name.as_str()).collect();
+        let unknown: Vec<&str> = selected
+            .iter()
+            .copied()
+            .filter(|name| !defined.contains(name))
+            .collect();
+        if !unknown.is_empty() {
+            bail!(
+                "Unknown topic(s) {}. Manifest defines: {}",
+                unknown.join(", "),
+                defined.join(", ")
+            );
         }
 
-        if !dry_run {
-            let mut updates = vec![(Branch::Manifest, manifest_head)];
-            for (topic, state) in &reconciled_topics {
-                if let Reconciled::Head(head) = state {
-                    updates.push((Branch::topic(topic), *head));
-                }
-            }
-            self.store.update_heads(&updates)?;
-        }
-
-        let enabled_topics: Vec<_> = manifest
+        let (selected_topics, filtered_topics): (Vec<_>, Vec<_>) = manifest
             .topics
             .iter()
-            .filter(|topic| topic.enabled)
-            .collect();
+            .partition(|topic| selected.is_empty() || selected.contains(&topic.name.as_str()));
+
+        let reconciled_topics = self.reconcile_topics(
+            manifest_head,
+            &selected_topics,
+            &remotes,
+            &hostname,
+            dry_run,
+        )?;
 
         let mut summary = SyncSummary::default();
-        for info in &enabled_topics {
+        for info in selected_topics.iter().copied().filter(|t| t.enabled) {
             let state = reconciled_topics
                 .get(&info.name)
                 .copied()
@@ -291,19 +288,84 @@ impl PorchettaEngine {
             summary.stored += result.stored;
             summary.applied += result.applied;
         }
+        if !filtered_topics.is_empty() {
+            let names: Vec<_> = filtered_topics.iter().map(|t| t.name.as_str()).collect();
+            ui::info(&format!(
+                "  Filtered out {} topic(s): {}",
+                names.len(),
+                names.join(", ")
+            ));
+        }
         summary.print(dry_run);
-
         if !dry_run {
-            let topic_names: Vec<_> = manifest
-                .topics
-                .iter()
-                .map(|topic| topic.name.as_str())
-                .collect();
+            let topic_names: Vec<_> = selected_topics.iter().map(|t| t.name.as_str()).collect();
             self.publish(&remotes, &topic_names)?;
         }
 
         debug!("Sync operation completed");
         Ok(())
+    }
+
+    fn reconcile_manifest(
+        &mut self,
+        remotes: &[Remote],
+        hostname: &str,
+        dry_run: bool,
+    ) -> Result<(gix::ObjectId, Manifest)> {
+        let local_manifest = self.store.head(&Branch::Manifest)?;
+        let remote_manifest_heads = self.remote_heads(remotes, &Branch::Manifest)?;
+        let manifest_head = match self.reconcile_head(
+            "manifest",
+            local_manifest,
+            remote_manifest_heads,
+            hostname,
+            dry_run,
+        )? {
+            Reconciled::Head(head) => head,
+            Reconciled::NoHistory => bail!("Manifest branch has no head"),
+            Reconciled::Conflict => bail!("Interactive sync is required to reconcile manifest"),
+        };
+        let manifest_bytes = self.store.read_manifest_at(manifest_head)?;
+        let manifest = Manifest::load_with_home(&manifest_bytes, Some(&self.home))
+            .context("Reconciled manifest is invalid")?;
+        info!("Loaded manifest with {} topics", manifest.topics.len());
+        Ok((manifest_head, manifest))
+    }
+
+    fn reconcile_topics(
+        &mut self,
+        manifest_head: gix::ObjectId,
+        topics: &[&crate::manifest::Topic],
+        remotes: &[Remote],
+        hostname: &str,
+        dry_run: bool,
+    ) -> Result<BTreeMap<String, Reconciled>> {
+        let mut reconciled_topics = BTreeMap::new();
+        for topic in topics {
+            let branch = Branch::topic(&topic.name);
+            let local_topic_head = self.store.head(&branch)?;
+            let remote_heads = self.remote_heads(remotes, &branch)?;
+            let state = self.reconcile_head(
+                &format!("topic/{}", topic.name),
+                local_topic_head,
+                remote_heads,
+                hostname,
+                dry_run,
+            )?;
+            reconciled_topics.insert(topic.name.clone(), state);
+        }
+
+        if !dry_run {
+            let mut updates = vec![(Branch::Manifest, manifest_head)];
+            for (topic, state) in &reconciled_topics {
+                if let Reconciled::Head(head) = state {
+                    updates.push((Branch::topic(topic), *head));
+                }
+            }
+            self.store.update_heads(&updates)?;
+        }
+
+        Ok(reconciled_topics)
     }
 
     fn publish(&self, remotes: &[Remote], topics: &[&str]) -> Result<()> {

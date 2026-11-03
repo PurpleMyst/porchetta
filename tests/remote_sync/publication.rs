@@ -164,3 +164,50 @@ fn empty_remote_is_bootstrapped_by_fanout() {
         engine.store().head(&Branch::Manifest).unwrap()
     );
 }
+
+#[test]
+fn filtered_sync_publishes_only_selected_topics() {
+    let _guard = remote_sync_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let origin_path = path(&temp, "origin");
+    let local_path = path(&temp, "local");
+    let home = path(&temp, "home");
+
+    let origin = init_store(&origin_path, BASIC_MANIFEST);
+    commit_topic_files(&origin, "test", &[("config.txt", "base\n")], "seed test");
+    commit_topic_files(&origin, "same", &[("config.txt", "same\n")], "seed same");
+    let local = clone_store(&origin_path, &local_path);
+    drop(local);
+
+    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let same_before = topic_head(engine.store(), "same");
+    let origin_same = commit_topic_files(
+        &origin,
+        "same",
+        &[("config.txt", "remote\n")],
+        "diverge same",
+    );
+    assert_ne!(origin_same, same_before);
+
+    fs::write(home.join(".config/test/config.txt"), "local test\n").unwrap();
+    let test_before = topic_head(engine.store(), "test");
+    let err = engine
+        .sync_topics(false, true, &["nope".to_string()])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Unknown topic(s) nope"), "{err}");
+    assert!(err.contains("Manifest defines: same, test"), "{err}");
+    assert_eq!(topic_head(engine.store(), "test"), test_before);
+
+    // Unfiltered publication would push the stale `same` branch and fail.
+    engine
+        .sync_topics(false, false, &["test".to_string()])
+        .unwrap();
+
+    assert_eq!(topic_head(engine.store(), "same"), same_before);
+    assert_eq!(topic_head(&origin, "same"), origin_same);
+    assert_eq!(
+        topic_head(&origin, "test"),
+        topic_head(engine.store(), "test")
+    );
+}

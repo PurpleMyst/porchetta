@@ -114,6 +114,9 @@ enum Command {
         /// Do not fetch or push from the remote
         #[arg(long)]
         offline: bool,
+        /// Limit synchronization to the named topics (repeatable)
+        #[arg(short = 't', long = "topic", value_name = "NAME")]
+        topics: Vec<String>,
     },
     /// Clone a Porchetta store from a remote URL
     Clone {
@@ -321,11 +324,17 @@ fn main() -> Result<()> {
             ui::success("Manifest updated");
         }
         Command::Manifest { command } => manifest_cli::run(command)?,
-        Command::Sync { dry_run, offline } => {
+        Command::Sync {
+            dry_run,
+            offline,
+            topics,
+        } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
             let mut engine = PorchettaEngine::new(store, InteractiveResolver)
                 .context("Failed to create engine")?;
-            engine.sync(dry_run, offline).context("Failed to sync")?;
+            engine
+                .sync_topics(dry_run, offline, &topics)
+                .context("Failed to sync")?;
         }
         Command::Remote { command } => handle_remote(command)?,
 
