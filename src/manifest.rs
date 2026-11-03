@@ -267,7 +267,6 @@ impl Manifest {
     /// # Errors
     ///
     /// Returns an error if the manifest is not a valid table or if any required fields are missing.
-    #[allow(clippy::too_many_lines)]
     pub fn load_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         Self::parse_with_home(manifest_content, home).map_err(|error| {
             if error.downcast_ref::<Diagnostic>().is_some() {
@@ -285,7 +284,6 @@ impl Manifest {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
     fn parse_with_home(manifest_content: &[u8], home: Option<&Utf8Path>) -> Result<Self> {
         debug!("Parsing manifest ({:?} bytes)", manifest_content.len());
         let lua = Lua::new();
@@ -325,90 +323,13 @@ impl Manifest {
             ),
         };
 
-        let mut topics: Vec<Topic> = Vec::new();
-        for (name, topic) in manifest_table
+        let mut topics: Vec<Topic> = manifest_table
             .get::<std::collections::HashMap<String, std::collections::HashMap<String, Value>>>(
                 "topics",
             )?
-        {
-            trace!("Loading topic '{name}'");
-            let paths: Vec<String> = topic
-                .get("paths")
-                .ok_or_else(|| anyhow::anyhow!("Topic must have a 'paths' field"))?
-                .as_table()
-                .ok_or_else(|| anyhow::anyhow!("'paths' field must be a sequence"))?
-                .sequence_values::<String>()
-                .collect::<mlua::Result<_>>()?;
-            let paths: Vec<Utf8PathBuf> = paths.into_iter().map(Utf8PathBuf::from).collect();
-
-            trace!("Topic '{}' has {} paths", name, paths.len());
-
-            let mut root = match topic.get("root") {
-                Some(Value::String(s)) => {
-                    let s = s.to_string_lossy();
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(Utf8PathBuf::from(s))
-                    }
-                }
-                Some(Value::Nil) | None => None,
-                Some(v) => bail!(
-                    "Topic '{name}' field 'root' must be a string, got {}",
-                    v.type_name()
-                ),
-            };
-
-            // Normalize absolute/rooted root that falls under the home directory
-            normalize_root_under_home(&mut root, home);
-
-            let to_repo = match topic.get("to_repo") {
-                Some(Value::Function(f)) => Some(f.clone()),
-                Some(Value::Nil) | None => None,
-                Some(v) => bail!(
-                    "Topic '{name}' field 'to_repo' must be a function, got {}",
-                    v.type_name()
-                ),
-            };
-
-            let to_system = match topic.get("to_system") {
-                Some(Value::Function(f)) => Some(f.clone()),
-                Some(Value::Nil) | None => None,
-                Some(v) => bail!(
-                    "Topic '{name}' field 'to_system' must be a function, got {}",
-                    v.type_name()
-                ),
-            };
-
-            let enabled = match topic.get("enabled") {
-                Some(Value::Boolean(b)) => *b,
-                Some(Value::Nil) | None => true,
-                Some(v) => bail!(
-                    "Topic '{name}' field 'enabled' must be a boolean, got {}",
-                    v.type_name()
-                ),
-            };
-
-            let should_include = match topic.get("should_include") {
-                Some(Value::Function(f)) => Some(f.clone()),
-                Some(Value::Nil) | None => None,
-                Some(v) => bail!(
-                    "Topic '{name}' field 'should_include' must be a function, got {}",
-                    v.type_name()
-                ),
-            };
-
-            topics.push(Topic {
-                name: name.clone(),
-                lua: lua.clone(),
-                enabled,
-                root,
-                paths,
-                to_repo,
-                to_system,
-                should_include,
-            });
-        }
+            .into_iter()
+            .map(|(name, topic)| Topic::parse(name, &topic, &lua, home))
+            .collect::<Result<_>>()?;
 
         topics.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -422,6 +343,85 @@ impl Manifest {
             topics,
             should_include,
         })
+    }
+}
+
+impl Topic {
+    fn parse(
+        name: String,
+        topic: &std::collections::HashMap<String, Value>,
+        lua: &Lua,
+        home: Option<&Utf8Path>,
+    ) -> Result<Self> {
+        trace!("Loading topic '{name}'");
+        let paths: Vec<String> = topic
+            .get("paths")
+            .ok_or_else(|| anyhow::anyhow!("Topic must have a 'paths' field"))?
+            .as_table()
+            .ok_or_else(|| anyhow::anyhow!("'paths' field must be a sequence"))?
+            .sequence_values::<String>()
+            .collect::<mlua::Result<_>>()?;
+        let paths: Vec<Utf8PathBuf> = paths.into_iter().map(Utf8PathBuf::from).collect();
+
+        trace!("Topic '{}' has {} paths", name, paths.len());
+
+        let mut root = match topic.get("root") {
+            Some(Value::String(s)) => {
+                let s = s.to_string_lossy();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(Utf8PathBuf::from(s))
+                }
+            }
+            Some(Value::Nil) | None => None,
+            Some(v) => bail!(
+                "Topic '{name}' field 'root' must be a string, got {}",
+                v.type_name()
+            ),
+        };
+
+        // Normalize absolute/rooted root that falls under the home directory
+        normalize_root_under_home(&mut root, home);
+
+        let to_repo = Self::optional_function(topic, &name, "to_repo")?;
+        let to_system = Self::optional_function(topic, &name, "to_system")?;
+        let should_include = Self::optional_function(topic, &name, "should_include")?;
+
+        let enabled = match topic.get("enabled") {
+            Some(Value::Boolean(b)) => *b,
+            Some(Value::Nil) | None => true,
+            Some(v) => bail!(
+                "Topic '{name}' field 'enabled' must be a boolean, got {}",
+                v.type_name()
+            ),
+        };
+
+        Ok(Self {
+            name,
+            lua: lua.clone(),
+            enabled,
+            root,
+            paths,
+            to_repo,
+            to_system,
+            should_include,
+        })
+    }
+
+    fn optional_function(
+        topic: &std::collections::HashMap<String, Value>,
+        topic_name: &str,
+        field: &str,
+    ) -> Result<Option<mlua::Function>> {
+        match topic.get(field) {
+            Some(Value::Function(f)) => Ok(Some(f.clone())),
+            Some(Value::Nil) | None => Ok(None),
+            Some(v) => bail!(
+                "Topic '{topic_name}' field '{field}' must be a function, got {}",
+                v.type_name()
+            ),
+        }
     }
 }
 

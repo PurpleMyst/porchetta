@@ -1,59 +1,6 @@
 use std::process::Command;
 
-fn tool_path(env_name: &str, fallback: &str) -> Option<String> {
-    std::env::var(env_name)
-        .ok()
-        .or_else(|| which_in_path(fallback))
-}
-
-fn which_in_path(program: &str) -> Option<String> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|path| path.join(program))
-            .find(|path| path.is_file())
-            .map(|path| path.to_string_lossy().into_owned())
-    })
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn manifest_edit_workspace_supports_luals_in_neovim() {
-    if !cfg!(unix) {
-        eprintln!("skipping: test editor script requires Unix");
-        return;
-    }
-
-    let Some(nvim) = tool_path("NVIM", "nvim") else {
-        eprintln!("skipping: set NVIM or put nvim in PATH");
-        return;
-    };
-    let Some(lua_language_server) = tool_path("LUA_LANGUAGE_SERVER", "lua-language-server") else {
-        eprintln!("skipping: set LUA_LANGUAGE_SERVER or put lua-language-server in PATH");
-        return;
-    };
-
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
-    std::fs::create_dir(&home).unwrap();
-
-    let bin = option_env!("CARGO_BIN_EXE_porchetta")
-        .map(str::to_owned)
-        .or_else(|| std::env::var("CARGO_BIN_EXE_porchetta").ok())
-        .unwrap_or_else(|| "target/debug/porchetta".to_string());
-
-    let status = Command::new(&bin)
-        .arg("init")
-        .env("HOME", &home)
-        .status()
-        .unwrap();
-    assert!(status.success(), "porchetta init failed");
-
-    let editor = temp.path().join("editor.sh");
-    let nvim_lua = temp.path().join("check_luals.lua");
-
-    std::fs::write(
-        &nvim_lua,
-        r"
+const CHECK_LUALS_LUA: &str = r"
 local manifest = vim.fn.fnamemodify(vim.env.MANIFEST, ':p')
 local workspace = vim.fn.fnamemodify(manifest, ':h')
 local lua_ls = vim.env.LUA_LANGUAGE_SERVER
@@ -139,9 +86,59 @@ for _, label in ipairs({ 'decode(content)', 'encode(value)', 'encode_pretty(valu
 end
 
 vim.cmd('qa!')
-",
-    )
-    .unwrap();
+";
+
+fn tool_path(env_name: &str, fallback: &str) -> Option<String> {
+    std::env::var(env_name)
+        .ok()
+        .or_else(|| which_in_path(fallback))
+}
+
+fn which_in_path(program: &str) -> Option<String> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|path| path.join(program))
+            .find(|path| path.is_file())
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+}
+
+#[test]
+fn manifest_edit_workspace_supports_luals_in_neovim() {
+    if !cfg!(unix) {
+        eprintln!("skipping: test editor script requires Unix");
+        return;
+    }
+
+    let Some(nvim) = tool_path("NVIM", "nvim") else {
+        eprintln!("skipping: set NVIM or put nvim in PATH");
+        return;
+    };
+    let Some(lua_language_server) = tool_path("LUA_LANGUAGE_SERVER", "lua-language-server") else {
+        eprintln!("skipping: set LUA_LANGUAGE_SERVER or put lua-language-server in PATH");
+        return;
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+
+    let bin = option_env!("CARGO_BIN_EXE_porchetta")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("CARGO_BIN_EXE_porchetta").ok())
+        .unwrap_or_else(|| "target/debug/porchetta".to_string());
+
+    let status = Command::new(&bin)
+        .arg("init")
+        .env("HOME", &home)
+        .status()
+        .unwrap();
+    assert!(status.success(), "porchetta init failed");
+
+    let editor = temp.path().join("editor.sh");
+    let nvim_lua = temp.path().join("check_luals.lua");
+
+    std::fs::write(&nvim_lua, CHECK_LUALS_LUA).unwrap();
 
     std::fs::write(
         &editor,

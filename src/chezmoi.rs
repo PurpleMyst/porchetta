@@ -88,11 +88,6 @@ fn parse_dir_name(name: &str) -> Result<DirAttr> {
     })
 }
 
-#[allow(
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::too_many_lines,
-    reason = "chezmoi filename parsing has many explicit attribute cases"
-)]
 fn parse_file_name(name: &str) -> Result<FileAttr> {
     if name.is_empty() {
         bail!("empty filename");
@@ -100,28 +95,24 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     let original = name;
     let mut name = name;
 
-    let kind: FileKind;
-
-    if let Some(rest) = name.strip_prefix("create_") {
-        kind = FileKind::Create;
+    let kind = if let Some(rest) = name.strip_prefix("create_") {
         name = rest;
+        FileKind::Create
     } else if let Some(rest) = name.strip_prefix("remove_") {
-        kind = FileKind::Remove;
         name = rest;
+        FileKind::Remove
     } else if let Some(rest) = name.strip_prefix("run_") {
-        kind = FileKind::Script;
-        name = rest;
-        name = strip_script_condition(name);
-        name = strip_script_order(name);
+        name = strip_script_order(strip_script_condition(rest));
+        FileKind::Script
     } else if let Some(rest) = name.strip_prefix("symlink_") {
-        kind = FileKind::Symlink;
         name = rest;
+        FileKind::Symlink
     } else if let Some(rest) = name.strip_prefix("modify_") {
-        kind = FileKind::Modify;
         name = rest;
+        FileKind::Modify
     } else {
-        kind = FileKind::Regular;
-    }
+        FileKind::Regular
+    };
 
     let mut encrypted = false;
     let mut private = false;
@@ -135,30 +126,17 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     ) {
         loop {
             let before = name;
-            let (found, rest) = strip_prefix(name, "encrypted_");
-            if found {
-                encrypted = true;
-                name = rest;
-            }
-            let (found, rest) = strip_prefix(name, "private_");
-            if found {
-                private = true;
-                name = rest;
-            }
-            let (found, rest) = strip_prefix(name, "readonly_");
-            if found {
-                read_only = true;
-                name = rest;
-            }
-            let (found, rest) = strip_prefix(name, "empty_");
-            if found {
-                empty = true;
-                name = rest;
-            }
-            let (found, rest) = strip_prefix(name, "executable_");
-            if found {
-                executable = true;
-                name = rest;
+            for (prefix, flag) in [
+                ("encrypted_", &mut encrypted),
+                ("private_", &mut private),
+                ("readonly_", &mut read_only),
+                ("empty_", &mut empty),
+                ("executable_", &mut executable),
+            ] {
+                if let Some(rest) = name.strip_prefix(prefix) {
+                    *flag = true;
+                    name = rest;
+                }
             }
             if name == before {
                 break;
@@ -166,34 +144,27 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
         }
     }
 
-    let name_prefix: &str;
-    if let Some(rest) = name.strip_prefix("dot_") {
-        name_prefix = ".";
+    let name_prefix = if let Some(rest) = name.strip_prefix("dot_") {
         name = rest;
+        "."
     } else if let Some(rest) = name.strip_prefix("literal_") {
-        name_prefix = "";
         name = rest;
+        ""
     } else {
-        name_prefix = "";
-    }
+        ""
+    };
 
     if encrypted && let Some(dot) = name.rfind('.') {
         name = &name[..dot];
     }
 
-    let template: bool;
-    if name.ends_with(".literal") {
-        name = &name[..name.len() - ".literal".len()];
-        template = false;
-    } else if name.ends_with(".tmpl") {
-        name = &name[..name.len() - ".tmpl".len()];
-        template = true;
-        if name.ends_with(".literal") {
-            name = &name[..name.len() - ".literal".len()];
-        }
+    let (template, name) = if let Some(rest) = name.strip_suffix(".literal") {
+        (false, rest)
+    } else if let Some(rest) = name.strip_suffix(".tmpl") {
+        (true, rest.strip_suffix(".literal").unwrap_or(rest))
     } else {
-        template = false;
-    }
+        (false, name)
+    };
 
     if name.is_empty() {
         bail!("{original}: invalid filename");
