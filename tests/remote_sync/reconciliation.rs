@@ -82,7 +82,7 @@ fn reconciles_independent_conflicting_and_three_head_topics() {
     );
 
     let (resolver, calls) = ReplacingResolver::new(b"resolved\n");
-    let engine = sync_with(&local_path, &home, resolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, resolver, false, false).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         read(&home.join(".config/clean/config.txt")),
@@ -98,7 +98,7 @@ fn reconciles_independent_conflicting_and_three_head_topics() {
     );
 
     for topic in ["clean", "conflict", "three"] {
-        let head = topic_head(engine.store(), topic);
+        let head = topic_head(&local, topic);
         assert_eq!(topic_head(&origin, topic), head);
         assert_eq!(topic_head(&backup, topic), head);
     }
@@ -123,9 +123,8 @@ fn reconciles_clean_manifest_changes() {
         .write_manifest(MANIFEST_RECONCILIATION_CLEAN_REMOTE)
         .unwrap();
 
-    let engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
-    let local = engine.store();
     let merged = String::from_utf8(local.read_manifest().unwrap()).unwrap();
     assert!(merged.contains("alpha-local"));
     assert!(merged.contains("beta-remote"));
@@ -158,11 +157,11 @@ fn reconciles_conflicting_manifests() {
         .unwrap();
     let (resolver, calls) = ReplacingResolver::new(MANIFEST_RECONCILIATION_RESOLVED);
 
-    let engine = sync_with(&local_path, &home, resolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, resolver, false, false).unwrap();
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        engine.store().read_manifest().unwrap(),
+        local.read_manifest().unwrap(),
         MANIFEST_RECONCILIATION_RESOLVED
     );
 }
@@ -197,7 +196,7 @@ fn rejects_invalid_reconciled_manifest_atomically() {
 
     let error = sync_with(&local_path, &home, resolver, false, false)
         .err()
-        .expect("sync should fail");
+        .unwrap();
 
     assert!(error.to_string().contains("Reconciled manifest is invalid"));
     assert_eq!(
@@ -256,11 +255,10 @@ fn disabled_topics_are_reconciled_and_pushed_without_being_applied() {
     assert_ne!(origin_head, base);
     assert_ne!(backup_head, base);
 
-    let engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
     assert_eq!(read(&home.join(".config/disabled/a.txt")), "do not apply\n");
     assert!(!home.join(".config/disabled/b.txt").exists());
-    let local = engine.store();
-    let merged = topic_head(local, "disabled");
+    let merged = topic_head(&local, "disabled");
     assert!(is_ancestor(local.repo(), origin_head, merged).unwrap());
     assert!(is_ancestor(local.repo(), backup_head, merged).unwrap());
     assert_eq!(topic_head(&origin, "disabled"), merged);
@@ -295,7 +293,7 @@ fn divergent_remote_dry_run_preserves_state_and_offline_sync_stays_local() {
     let local = clone_store(&origin_path, &local_path);
     local.add_remote("backup", backup_path.as_str()).unwrap();
     drop(local);
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
     let origin_head = commit_topic_files(
         &origin,
@@ -316,31 +314,24 @@ fn divergent_remote_dry_run_preserves_state_and_offline_sync_stays_local() {
     )
     .unwrap();
 
-    let manifest_before = engine.store().head(&Branch::Manifest).unwrap();
-    let topic_before = topic_head(engine.store(), "test");
+    let manifest_before = local.head(&Branch::Manifest).unwrap();
+    let topic_before = topic_head(&local, "test");
     let hostname = hostname::get().unwrap().to_string_lossy().into_owned();
-    let system_before = engine
-        .store()
-        .head(&Branch::system(&hostname, "test"))
-        .unwrap();
+    let system_before = local.head(&Branch::system(&hostname, "test")).unwrap();
     let config_before = run_git(&local_path, &["config", "--local", "--list"]);
     let origin_manifest = origin.head(&Branch::Manifest).unwrap();
     let backup_manifest = backup.head(&Branch::Manifest).unwrap();
 
-    engine.sync(true, false).unwrap();
+    local
+        .sync_at(&home, true, false, &[], &PanickingResolver)
+        .unwrap();
 
-    assert!(!is_ancestor(engine.store().repo(), origin_head, backup_head).unwrap());
-    assert!(!is_ancestor(engine.store().repo(), backup_head, origin_head).unwrap());
+    assert!(!is_ancestor(local.repo(), origin_head, backup_head).unwrap());
+    assert!(!is_ancestor(local.repo(), backup_head, origin_head).unwrap());
+    assert_eq!(local.head(&Branch::Manifest).unwrap(), manifest_before);
+    assert_eq!(topic_head(&local, "test"), topic_before);
     assert_eq!(
-        engine.store().head(&Branch::Manifest).unwrap(),
-        manifest_before
-    );
-    assert_eq!(topic_head(engine.store(), "test"), topic_before);
-    assert_eq!(
-        engine
-            .store()
-            .head(&Branch::system(&hostname, "test"))
-            .unwrap(),
+        local.head(&Branch::system(&hostname, "test")).unwrap(),
         system_before
     );
     assert_eq!(
@@ -356,8 +347,10 @@ fn divergent_remote_dry_run_preserves_state_and_offline_sync_stays_local() {
     assert_eq!(topic_head(&origin, "test"), origin_head);
     assert_eq!(topic_head(&backup, "test"), backup_head);
 
-    engine.sync(false, true).unwrap();
-    let offline_head = topic_head(engine.store(), "test");
+    local
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
+    let offline_head = topic_head(&local, "test");
     assert_ne!(
         offline_head, topic_before,
         "offline sync should still capture locally"
@@ -418,7 +411,7 @@ fn reconciles_criss_cross_heads_with_multiple_merge_bases() {
     let local = clone_store(&origin_path, &local_path);
     local.add_remote("backup", backup_path.as_str()).unwrap();
     drop(local);
-    let engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
     let bases = run_git(
         &local_path,
@@ -429,8 +422,7 @@ fn reconciles_criss_cross_heads_with_multiple_merge_bases() {
         2,
         "fixture must have two merge bases"
     );
-    let local = engine.store();
-    let reconciled = topic_head(local, "test");
+    let reconciled = topic_head(&local, "test");
     assert!(is_ancestor(local.repo(), a2, reconciled).unwrap());
     assert!(is_ancestor(local.repo(), b2, reconciled).unwrap());
     assert_eq!(read(&home.join(".config/test/config.txt")), "A\ntwo\nB\n");
@@ -453,7 +445,7 @@ fn dry_run_reports_reconciliation_conflicts_without_failing() {
     let local = clone_store(&origin_path, &local_path);
     local.add_remote("backup", backup_path.as_str()).unwrap();
     drop(local);
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
     // Diverge both remotes on the same line so reconciliation must conflict.
     commit_topic_files(
@@ -470,22 +462,18 @@ fn dry_run_reports_reconciliation_conflicts_without_failing() {
         "backup conflicting",
     );
 
-    let topic_before = topic_head(engine.store(), "test");
+    let topic_before = topic_head(&local, "test");
     let hostname = hostname::get().unwrap().to_string_lossy().into_owned();
-    let system_before = engine
-        .store()
-        .head(&Branch::system(&hostname, "test"))
-        .unwrap();
+    let system_before = local.head(&Branch::system(&hostname, "test")).unwrap();
 
     // PanickingResolver proves no interactive resolution is attempted.
-    engine.sync(true, false).unwrap();
+    local
+        .sync_at(&home, true, false, &[], &PanickingResolver)
+        .unwrap();
 
-    assert_eq!(topic_head(engine.store(), "test"), topic_before);
+    assert_eq!(topic_head(&local, "test"), topic_before);
     assert_eq!(
-        engine
-            .store()
-            .head(&Branch::system(&hostname, "test"))
-            .unwrap(),
+        local.head(&Branch::system(&hostname, "test")).unwrap(),
         system_before
     );
     assert_eq!(read(&home.join(".config/test/config.txt")), "base\n");

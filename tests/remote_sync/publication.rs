@@ -30,9 +30,9 @@ fn origin_and_named_remote_handle_same_heads_fast_forwards_and_local_ahead() {
     local.add_remote("backup", backup_path.as_str()).unwrap();
     drop(local);
 
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
     assert_eq!(read(&home.join(".config/test/config.txt")), "base\n");
-    let unchanged = topic_head(engine.store(), "same");
+    let unchanged = topic_head(&local, "same");
 
     let backup = PorchettaStore::load_at(&backup_path).unwrap();
     let backup_ahead = commit_topic_files(
@@ -41,20 +41,23 @@ fn origin_and_named_remote_handle_same_heads_fast_forwards_and_local_ahead() {
         &[("config.txt", "from backup\n")],
         "backup ahead",
     );
-    engine.sync(false, false).unwrap();
+    local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap();
 
-    let local = engine.store();
-    assert_eq!(topic_head(local, "test"), backup_ahead);
+    assert_eq!(topic_head(&local, "test"), backup_ahead);
     assert_eq!(read(&home.join(".config/test/config.txt")), "from backup\n");
     assert_eq!(
-        topic_head(local, "same"),
+        topic_head(&local, "same"),
         unchanged,
         "same heads must stay unchanged"
     );
     assert_eq!(topic_head(&origin, "test"), backup_ahead);
     fs::write(home.join(".config/test/config.txt"), "local ahead\n").unwrap();
-    engine.sync(false, false).unwrap();
-    let local_ahead = topic_head(engine.store(), "test");
+    local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap();
+    let local_ahead = topic_head(&local, "test");
     assert_ne!(local_ahead, backup_ahead);
     assert_eq!(topic_head(&origin, "test"), local_ahead);
     assert_eq!(topic_head(&backup, "test"), local_ahead);
@@ -95,18 +98,19 @@ fn undeclared_and_system_refs_are_never_transferred_and_clone_ignores_system() {
     local.add_remote("backup", backup_path.as_str()).unwrap();
     drop(local);
 
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
     let orphan_new = commit_topic_files(
         &origin,
         "orphan",
         &[("config.txt", "origin changed orphan\n")],
         "advance undeclared",
     );
-    engine.sync(false, false).unwrap();
+    local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap();
 
-    let local = engine.store();
     assert_ne!(orphan_new, orphan_base);
-    assert_eq!(topic_head(local, "orphan"), orphan_base);
+    assert_eq!(topic_head(&local, "orphan"), orphan_base);
     assert_eq!(topic_head(&backup, "orphan"), orphan_base);
     assert_eq!(topic_head(&origin, "orphan"), orphan_new);
 
@@ -156,12 +160,12 @@ fn empty_remote_is_bootstrapped_by_fanout() {
     local.add_remote("backup", remote_path.as_str()).unwrap();
     drop(local);
 
-    let engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
     let remote = PorchettaStore::load_at(&remote_path).unwrap();
     assert_eq!(
         remote.head(&Branch::Manifest).unwrap(),
-        engine.store().head(&Branch::Manifest).unwrap()
+        local.head(&Branch::Manifest).unwrap()
     );
 }
 
@@ -179,8 +183,8 @@ fn filtered_sync_publishes_only_selected_topics() {
     let local = clone_store(&origin_path, &local_path);
     drop(local);
 
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
-    let same_before = topic_head(engine.store(), "same");
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let same_before = topic_head(&local, "same");
     let origin_same = commit_topic_files(
         &origin,
         "same",
@@ -190,24 +194,33 @@ fn filtered_sync_publishes_only_selected_topics() {
     assert_ne!(origin_same, same_before);
 
     fs::write(home.join(".config/test/config.txt"), "local test\n").unwrap();
-    let test_before = topic_head(engine.store(), "test");
-    let err = engine
-        .sync_topics(false, true, &["nope".to_string()])
+    let test_before = topic_head(&local, "test");
+    let err = local
+        .sync_at(
+            &home,
+            false,
+            true,
+            &["nope".to_string()],
+            &PanickingResolver,
+        )
         .unwrap_err()
         .to_string();
     assert!(err.contains("Unknown topic(s) nope"), "{err}");
     assert!(err.contains("Manifest defines: same, test"), "{err}");
-    assert_eq!(topic_head(engine.store(), "test"), test_before);
+    assert_eq!(topic_head(&local, "test"), test_before);
 
     // Unfiltered publication would push the stale `same` branch and fail.
-    engine
-        .sync_topics(false, false, &["test".to_string()])
+    local
+        .sync_at(
+            &home,
+            false,
+            false,
+            &["test".to_string()],
+            &PanickingResolver,
+        )
         .unwrap();
 
-    assert_eq!(topic_head(engine.store(), "same"), same_before);
+    assert_eq!(topic_head(&local, "same"), same_before);
     assert_eq!(topic_head(&origin, "same"), origin_same);
-    assert_eq!(
-        topic_head(&origin, "test"),
-        topic_head(engine.store(), "test")
-    );
+    assert_eq!(topic_head(&origin, "test"), topic_head(&local, "test"));
 }

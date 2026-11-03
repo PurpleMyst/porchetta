@@ -1,5 +1,5 @@
 use camino::Utf8PathBuf;
-use porchetta::engine::PorchettaEngine;
+use porchetta::engine::resolver::PanickingResolver;
 use porchetta::store::{Branch, PorchettaStore};
 
 #[test]
@@ -18,24 +18,21 @@ fn test_capture_missing_manifest_file_path_removes_file() {
     let config_path = topic_dir.join("config.txt");
     std::fs::write(&config_path, "initial").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     std::fs::remove_file(&config_path).unwrap();
 
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
-    let head = engine
-        .store()
+    let head = store
         .head(&Branch::topic("test"))
         .unwrap()
         .expect("topic head should exist");
-    let tree = engine
-        .store()
+    let tree = store
         .repo()
         .find_object(head)
         .unwrap()

@@ -7,7 +7,6 @@ use std::sync::{
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
-use porchetta::engine::PorchettaEngine;
 use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
 use porchetta::store::{Branch, PorchettaStore};
 
@@ -218,17 +217,17 @@ pub fn commit_tree(
         .unwrap()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn sync_with(
     store_path: &Utf8Path,
     home: &Utf8Path,
-    resolver: impl ConflictResolver + 'static,
+    resolver: impl ConflictResolver,
     dry_run: bool,
     offline: bool,
-) -> Result<PorchettaEngine> {
+) -> Result<PorchettaStore> {
     let store = PorchettaStore::load_at(store_path)?;
-    let mut engine = PorchettaEngine::with_home(store, home.to_owned(), resolver);
-    engine.sync(dry_run, offline)?;
-    Ok(engine)
+    store.sync_at(home, dry_run, offline, &[], &resolver)?;
+    Ok(store)
 }
 
 pub fn clone_store(source: &Utf8Path, destination: &Utf8Path) -> PorchettaStore {

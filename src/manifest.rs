@@ -22,7 +22,7 @@ impl std::fmt::Display for Diagnostic {
 impl std::error::Error for Diagnostic {}
 
 pub struct Manifest {
-    pub lua: Lua,
+    lua: Lua,
     pub topics: Vec<Topic>,
     pub should_include: Option<mlua::Function>,
 }
@@ -40,7 +40,7 @@ impl std::fmt::Debug for Manifest {
 pub struct Topic {
     pub name: String,
     pub enabled: bool,
-    pub lua: Lua,
+    lua: Lua,
     pub root: Option<Utf8PathBuf>,
     pub paths: Vec<Utf8PathBuf>,
     pub to_repo: Option<mlua::Function>,
@@ -791,124 +791,72 @@ mod tests {
 
     #[test]
     fn test_to_repo_transforms_content() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r#"function(path, content) return content:gsub("hello", "goodbye") end"#)
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: Some(func.clone()),
-            to_system: None,
-            should_include: None,
-        };
-        let result = topic.to_repo("a.txt", b"hello world").unwrap();
+        let manifest = Manifest::load(
+            br#"return { topics = { test = { paths = {"a.txt"},
+                to_repo = function(path, content) return content:gsub("hello", "goodbye") end } } }"#,
+        )
+        .unwrap();
+        let result = manifest.topics[0].to_repo("a.txt", b"hello world").unwrap();
         assert_eq!(result, b"goodbye world");
     }
 
     #[test]
     fn test_to_repo_rejects_non_string_return() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path, content) return 42 end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: Some(func),
-            to_system: None,
-            should_include: None,
-        };
-        let result = topic.to_repo("a.txt", b"hello world");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let manifest = Manifest::load(
+            br#"return { topics = { test = { paths = {"a.txt"},
+                to_repo = function(path, content) return 42 end } } }"#,
+        )
+        .unwrap();
+        let err = manifest.topics[0]
+            .to_repo("a.txt", b"hello world")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must return a string"));
     }
 
     #[test]
     fn test_should_include_true() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return true end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: None,
-            to_system: None,
-            should_include: Some(func),
-        };
-        assert!(topic.should_include("a.txt").unwrap());
+        let manifest = Manifest::load(
+            br#"return { topics = { test = { paths = {"a.txt"},
+                should_include = function(path) return true end } } }"#,
+        )
+        .unwrap();
+        assert!(manifest.topics[0].should_include("a.txt").unwrap());
     }
 
     #[test]
     fn test_should_include_false() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return false end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: None,
-            to_system: None,
-            should_include: Some(func),
-        };
-        assert!(!topic.should_include("a.txt").unwrap());
+        let manifest = Manifest::load(
+            br#"return { topics = { test = { paths = {"a.txt"},
+                should_include = function(path) return false end } } }"#,
+        )
+        .unwrap();
+        assert!(!manifest.topics[0].should_include("a.txt").unwrap());
     }
 
     #[test]
     fn test_should_include_rejects_non_boolean_return() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return 'yes' end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: None,
-            to_system: None,
-            should_include: Some(func),
-        };
-        let result = topic.should_include("a.txt");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let manifest = Manifest::load(
+            br#"return { topics = { test = { paths = {"a.txt"},
+                should_include = function(path) return 'yes' end } } }"#,
+        )
+        .unwrap();
+        let err = manifest.topics[0]
+            .should_include("a.txt")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must return a boolean"));
     }
 
     #[test]
     fn test_load_manifest_with_top_level_should_include() {
-        let manifest_content = r#"return {
-            should_include = function(path)
-                return path:sub(-4) ~= ".bak"
-            end,
-            topics = {
-                git = {
-                    paths = {".gitconfig"}
-                }
-            }
-        }"#;
-        let manifest = Manifest::load(manifest_content.as_bytes()).unwrap();
+        let manifest = Manifest::load(
+            br#"return {
+                should_include = function(path) return path:sub(-4) ~= ".bak" end,
+                topics = { git = { paths = {".gitconfig"} } }
+            }"#,
+        )
+        .unwrap();
         assert!(manifest.should_include.is_some());
         assert!(manifest.should_include(".gitconfig").unwrap());
         assert!(!manifest.should_include("foo.bak").unwrap());
@@ -916,108 +864,59 @@ mod tests {
 
     #[test]
     fn test_load_manifest_rejects_non_function_top_level_should_include() {
-        let manifest_content = r#"return {
-            should_include = true,
-            topics = {
-                git = {
-                    paths = {".gitconfig"}
-                }
-            }
-        }"#;
-        let result = Manifest::load(manifest_content.as_bytes());
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = Manifest::load(
+            br#"return { should_include = true, topics = { git = { paths = {".gitconfig"} } } }"#,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("should_include"));
     }
 
     #[test]
     fn test_manifest_should_include_true() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return true end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let manifest = Manifest {
-            lua: lua.clone(),
-            topics: vec![],
-            should_include: Some(func),
-        };
+        let manifest = Manifest::load(
+            br"return { should_include = function(path) return true end, topics = {} }",
+        )
+        .unwrap();
         assert!(manifest.should_include("a.txt").unwrap());
     }
 
     #[test]
     fn test_manifest_should_include_false() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return false end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let manifest = Manifest {
-            lua: lua.clone(),
-            topics: vec![],
-            should_include: Some(func),
-        };
+        let manifest = Manifest::load(
+            br"return { should_include = function(path) return false end, topics = {} }",
+        )
+        .unwrap();
         assert!(!manifest.should_include("a.txt").unwrap());
     }
 
     #[test]
     fn test_manifest_should_include_rejects_non_boolean_return() {
-        let lua = Lua::new();
-        let func = lua
-            .load(r"function(path) return 'yes' end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let manifest = Manifest {
-            lua: lua.clone(),
-            topics: vec![],
-            should_include: Some(func),
-        };
-        let result = manifest.should_include("a.txt");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let manifest = Manifest::load(
+            br"return { should_include = function(path) return 'yes' end, topics = {} }",
+        )
+        .unwrap();
+        let err = manifest.should_include("a.txt").unwrap_err().to_string();
         assert!(err.contains("must return a boolean"));
     }
 
     #[test]
     fn test_manifest_and_topic_should_include_and_combination() {
-        let lua = Lua::new();
-        let manifest_func = lua
-            .load(r"function(path) return path:sub(-4) ~= '.bak' end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let topic_func = lua
-            .load(r"function(path) return path:sub(1, 1) ~= '.' end")
-            .eval::<mlua::Function>()
-            .unwrap();
-        let manifest = Manifest {
-            lua: lua.clone(),
-            topics: vec![],
-            should_include: Some(manifest_func),
-        };
-        let topic = Topic {
-            name: "test".to_string(),
-            enabled: true,
-            lua: lua.clone(),
-            root: None,
-            paths: vec![],
-            to_repo: None,
-            to_system: None,
-            should_include: Some(topic_func),
-        };
-        // Both allow
-        assert!(
-            manifest.should_include("gitconfig").unwrap()
-                && topic.should_include("gitconfig").unwrap()
-        );
-        // Manifest rejects .bak
-        assert!(
-            !(manifest.should_include("foo.bak").unwrap()
-                && topic.should_include("foo.bak").unwrap())
-        );
-        // Topic rejects dotfile
-        assert!(
-            !(manifest.should_include(".gitconfig").unwrap()
-                && topic.should_include(".gitconfig").unwrap())
-        );
+        let manifest = Manifest::load(
+            br#"return {
+                should_include = function(path) return path:sub(-4) ~= '.bak' end,
+                topics = {
+                    test = {
+                        paths = {"gitconfig"},
+                        should_include = function(path) return path:sub(1, 1) ~= '.' end,
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let topic = &manifest.topics[0];
+        assert!(manifest.includes(topic, "gitconfig").unwrap());
+        assert!(!manifest.includes(topic, "foo.bak").unwrap());
+        assert!(!manifest.includes(topic, ".gitconfig").unwrap());
     }
 }

@@ -19,11 +19,8 @@ fn fetch_failure_happens_before_canonical_or_filesystem_changes() {
     commit_topic_files(&origin, "same", &[("config.txt", "same\n")], "seed same");
     let local = clone_store(&origin_path, &local_path);
     drop(local);
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
-    engine
-        .store()
-        .add_remote("a-broken", missing_path.as_str())
-        .unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    local.add_remote("a-broken", missing_path.as_str()).unwrap();
 
     commit_topic_files(
         &origin,
@@ -32,26 +29,22 @@ fn fetch_failure_happens_before_canonical_or_filesystem_changes() {
         "remote ahead",
     );
     fs::write(home.join(".config/test/config.txt"), "pending local\n").unwrap();
-    let canonical_before = topic_head(engine.store(), "test");
+    let canonical_before = topic_head(&local, "test");
     let hostname = hostname::get().unwrap().to_string_lossy().into_owned();
-    let system_before = engine
-        .store()
-        .head(&Branch::system(&hostname, "test"))
-        .unwrap();
+    let system_before = local.head(&Branch::system(&hostname, "test")).unwrap();
     let remote_before = topic_head(&origin, "test");
 
-    let error = engine.sync(false, false).unwrap_err();
+    let error = local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap_err();
     assert!(
         error
             .to_string()
             .contains("Failed to fetch remote 'a-broken'")
     );
-    assert_eq!(topic_head(engine.store(), "test"), canonical_before);
+    assert_eq!(topic_head(&local, "test"), canonical_before);
     assert_eq!(
-        engine
-            .store()
-            .head(&Branch::system(&hostname, "test"))
-            .unwrap(),
+        local.head(&Branch::system(&hostname, "test")).unwrap(),
         system_before
     );
     assert_eq!(
@@ -89,7 +82,7 @@ fn push_failure_continues_fanout_and_retry_repairs_only_the_failed_remote() {
     local.add_remote("a-reject", reject_path.as_str()).unwrap();
     local.add_remote("z-good", good_path.as_str()).unwrap();
     drop(local);
-    let mut engine = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
+    let local = sync_with(&local_path, &home, PanickingResolver, false, false).unwrap();
 
     let old_manifest = reject.head(&Branch::Manifest).unwrap().unwrap();
     let old_test = topic_head(&reject, "test");
@@ -97,16 +90,17 @@ fn push_failure_continues_fanout_and_retry_repairs_only_the_failed_remote() {
     let hook = install_reject_topic_hook(&reject_path, "test");
     drop(reject);
 
-    engine.store().write_manifest(BASIC_MANIFEST).unwrap();
+    local.write_manifest(BASIC_MANIFEST).unwrap();
     fs::write(home.join(".config/test/config.txt"), "test fanout\n").unwrap();
     fs::write(home.join(".config/same/config.txt"), "same fanout\n").unwrap();
-    let error = engine.sync(false, false).unwrap_err();
+    let error = local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap_err();
     assert!(error.to_string().contains("a-reject"));
 
-    let local = engine.store();
     let new_manifest = local.head(&Branch::Manifest).unwrap().unwrap();
-    let new_test = topic_head(local, "test");
-    let new_same = topic_head(local, "same");
+    let new_test = topic_head(&local, "test");
+    let new_same = topic_head(&local, "same");
     assert_ne!(new_manifest, old_manifest);
     assert_ne!(new_test, old_test);
     assert_ne!(new_same, old_same);
@@ -126,7 +120,9 @@ fn push_failure_continues_fanout_and_retry_repairs_only_the_failed_remote() {
 
     fs::remove_file(hook).unwrap();
     drop(rejected);
-    engine.sync(false, false).unwrap();
+    local
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap();
     let rejected = PorchettaStore::load_at(&reject_path).unwrap();
     assert_eq!(
         rejected.head(&Branch::Manifest).unwrap(),
@@ -167,7 +163,7 @@ fn non_fast_forward_race_is_reported_without_forcing() {
     fs::write(home.join(".config/test/config.txt"), "local writer\n").unwrap();
     let error = sync_with(&local_path, &home, PanickingResolver, false, false)
         .err()
-        .expect("sync should fail");
+        .unwrap();
     let message = error.to_string();
     assert!(message.contains("publication failed") || message.contains("origin"));
     assert_eq!(topic_head(&origin, "test"), raced);

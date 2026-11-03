@@ -1,4 +1,15 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use camino::Utf8PathBuf;
+
+/// Returns the user's home directory as a UTF-8 path.
+///
+/// # Errors
+///
+/// Returns an error if the home directory cannot be determined or is not valid UTF-8.
+pub fn home_dir() -> Result<Utf8PathBuf> {
+    Utf8PathBuf::try_from(dirs::home_dir().context("Could not determine home directory")?)
+        .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))
+}
 
 /// Returns the user's preferred editor, checking `$EDITOR`, `$VISUAL`, and
 /// common fallbacks in order.

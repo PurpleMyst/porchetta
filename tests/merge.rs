@@ -6,8 +6,7 @@
 
 use camino::Utf8PathBuf;
 use gix::bstr::ByteSlice;
-use porchetta::engine::PorchettaEngine;
-use porchetta::engine::resolver::ConflictResolver;
+use porchetta::engine::resolver::{ConflictResolver, PanickingResolver};
 use porchetta::store::{Branch, PorchettaStore};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -177,25 +176,18 @@ fn test_non_overlapping_changes_no_conflicts() {
     // Create initial file and sync to establish base
     std::fs::write(topic_dir.join("config.txt"), "line1\nline2\nline3\n").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Modify local: change line 1
     std::fs::write(topic_dir.join("config.txt"), "local-line1\nline2\nline3\n").unwrap();
 
     // Modify remote: change line 3 (non-overlapping with local changes)
-    commit_remote_change(
-        engine.store(),
-        "config.txt",
-        Some("line1\nline2\nremote-line3\n"),
-    );
+    commit_remote_change(&store, "config.txt", Some("line1\nline2\nremote-line3\n"));
 
     // Sync local - should auto-merge without conflicts
-    let result = engine.sync(false, false);
+    let result = store.sync_at(&home, false, false, &[], &PanickingResolver);
 
     // Sync should succeed without conflicts
     assert!(
@@ -237,25 +229,18 @@ fn test_identical_changes_no_conflicts() {
     // Create initial file and sync
     std::fs::write(topic_dir.join("config.txt"), "line1\nline2\nline3\n").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Modify local: change line 2
     std::fs::write(topic_dir.join("config.txt"), "line1\nchanged\nline3\n").unwrap();
 
     // Modify remote with SAME change
-    commit_remote_change(
-        engine.store(),
-        "config.txt",
-        Some("line1\nchanged\nline3\n"),
-    );
+    commit_remote_change(&store, "config.txt", Some("line1\nchanged\nline3\n"));
 
     // Sync local - should auto-merge
-    let result = engine.sync(false, false);
+    let result = store.sync_at(&home, false, false, &[], &PanickingResolver);
 
     assert!(result.is_ok(), "identical changes should auto-merge");
     let content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
@@ -293,12 +278,9 @@ fn test_conflict_markers_are_minimal() {
     )
     .unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Local changes the header
     std::fs::write(
@@ -309,17 +291,13 @@ fn test_conflict_markers_are_minimal() {
 
     // Remote changes the SAME region (header) differently
     commit_remote_change(
-        engine.store(),
+        &store,
         "config.txt",
         Some("remote header\ncommon line\nfooter line\n"),
     );
-    drop(engine);
 
     let resolver = PassthroughBlobResolver { edited_path: None };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     assert_file_conflict_eq(
         &topic_dir.join("config.txt"),
@@ -354,12 +332,9 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
     let base = base_lines.join("\n") + "\n";
     std::fs::write(topic_dir.join("config.txt"), &base).unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Local changes lines 25-30 (the middle)
     let mut local_lines = base_lines.clone();
@@ -375,14 +350,10 @@ fn test_large_file_conflict_markers_surround_only_conflicted_region() {
         remote_lines[i - 1] = format!("remote{i}");
     }
     let remote = remote_lines.join("\n") + "\n";
-    commit_remote_change(engine.store(), "config.txt", Some(&remote));
-    drop(engine);
+    commit_remote_change(&store, "config.txt", Some(&remote));
 
     let resolver = PassthroughBlobResolver { edited_path: None };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     let expected = format!(
         "{}<<<<<<<\n{}|||||||\n{}=======\n{}>>>>>>>\n{}",
@@ -440,12 +411,9 @@ fn test_partial_line_conflict_markers_minimal() {
     let base = "alpha\nbeta\ncharlie\ndelta\nepsilon\n";
     std::fs::write(topic_dir.join("config.txt"), base).unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Local changes "alpha" and "epsilon"
     let local = "ALPHA\nbeta\ncharlie\ndelta\nEPSILON\n";
@@ -453,17 +421,13 @@ fn test_partial_line_conflict_markers_minimal() {
 
     // Remote only changes "alpha" (subset conflict)
     commit_remote_change(
-        engine.store(),
+        &store,
         "config.txt",
         Some("REMOTE\nbeta\ncharlie\ndelta\nepsilon\n"),
     );
-    drop(engine);
 
     let resolver = PassthroughBlobResolver { edited_path: None };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     assert_file_conflict_eq(
         &topic_dir.join("config.txt"),
@@ -493,30 +457,19 @@ fn test_blob_conflict_passes_path_to_resolver() {
     std::fs::create_dir_all(topic_dir.join("subdir")).unwrap();
     std::fs::write(topic_dir.join("subdir/config.lua"), "value = 'base'\n").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     std::fs::write(topic_dir.join("subdir/config.lua"), "value = 'local'\n").unwrap();
 
-    commit_remote_change(
-        engine.store(),
-        "subdir/config.lua",
-        Some("value = 'remote'\n"),
-    );
-    drop(engine);
+    commit_remote_change(&store, "subdir/config.lua", Some("value = 'remote'\n"));
 
     let edited_path = Arc::new(Mutex::new(None));
     let resolver = PassthroughBlobResolver {
         edited_path: Some(Arc::clone(&edited_path)),
     };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     assert_eq!(
         edited_path.lock().unwrap().as_deref(),
@@ -528,7 +481,7 @@ fn test_blob_conflict_passes_path_to_resolver() {
     );
 }
 
-fn setup_modify_delete_conflict(home: &Utf8PathBuf, store_path: &Utf8PathBuf) {
+fn setup_modify_delete_conflict(home: &Utf8PathBuf, store_path: &Utf8PathBuf) -> PorchettaStore {
     let store = PorchettaStore::init_at(store_path).unwrap();
     let manifest = br#"return {
         topics = {
@@ -544,15 +497,13 @@ fn setup_modify_delete_conflict(home: &Utf8PathBuf, store_path: &Utf8PathBuf) {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "base\n").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     std::fs::write(topic_dir.join("config.txt"), "local\n").unwrap();
-    commit_remote_change(engine.store(), "config.txt", None);
+    commit_remote_change(&store, "config.txt", None);
+    store
 }
 
 #[test]
@@ -561,17 +512,14 @@ fn test_modify_delete_tree_conflict_keep_local_modification() {
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
-    setup_modify_delete_conflict(&home, &store_path);
+    let store = setup_modify_delete_conflict(&home, &store_path);
 
     let prompt = Arc::new(Mutex::new(None));
     let resolver = RecordingTreeResolver {
         resolution: || porchetta::engine::resolver::TreeConflictResolution::KeepOurs,
         prompt: Arc::clone(&prompt),
     };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     let prompt = prompt.lock().unwrap().clone().unwrap();
     assert!(prompt.contains("Resolve tree conflict at 'config.txt'"));
@@ -589,17 +537,14 @@ fn test_modify_delete_tree_conflict_keep_remote_deletion() {
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
-    setup_modify_delete_conflict(&home, &store_path);
+    let store = setup_modify_delete_conflict(&home, &store_path);
 
     let prompt = Arc::new(Mutex::new(None));
     let resolver = RecordingTreeResolver {
         resolution: || porchetta::engine::resolver::TreeConflictResolution::KeepTheirs,
         prompt: Arc::clone(&prompt),
     };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
-
-    engine.sync(false, false).unwrap();
+    store.sync_at(&home, false, false, &[], &resolver).unwrap();
 
     let prompt = prompt.lock().unwrap().clone().unwrap();
     assert!(prompt.contains("Resolve tree conflict at 'config.txt'"));
@@ -614,17 +559,15 @@ fn test_tree_conflict_abort_returns_error() {
     let temp = tempfile::tempdir().unwrap();
     let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
     let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
-    setup_modify_delete_conflict(&home, &store_path);
+    let store = setup_modify_delete_conflict(&home, &store_path);
 
     let prompt = Arc::new(Mutex::new(None));
     let resolver = RecordingTreeResolver {
         resolution: || porchetta::engine::resolver::TreeConflictResolution::Abort,
         prompt: Arc::clone(&prompt),
     };
-    let store = PorchettaStore::load_at(&store_path).unwrap();
-    let mut engine = PorchettaEngine::with_home(store, home.clone(), resolver);
 
-    let result = engine.sync(false, false);
+    let result = store.sync_at(&home, false, false, &[], &resolver);
 
     assert!(result.is_err());
     assert!(prompt.lock().unwrap().is_some());
@@ -657,21 +600,20 @@ fn test_both_deleted_blob_does_not_conflict() {
     std::fs::write(topic_dir.join("subdir/file.txt"), "content\n").unwrap();
     std::fs::write(topic_dir.join("subdir/other.txt"), "other\n").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
     // Both sides delete the same blob while the directory itself is only
     // modified locally: the local snapshot loses it (e.g. via a filter) and
     // the remote branch deletes the whole directory.
     std::fs::remove_file(topic_dir.join("subdir/file.txt")).unwrap();
-    commit_remote_change(engine.store(), "subdir/file.txt", None);
-    commit_remote_change(engine.store(), "subdir/other.txt", None);
+    commit_remote_change(&store, "subdir/file.txt", None);
+    commit_remote_change(&store, "subdir/other.txt", None);
 
-    engine.sync(false, false).unwrap();
+    store
+        .sync_at(&home, false, false, &[], &PanickingResolver)
+        .unwrap();
 
     assert!(!home.join(".config/test/subdir/file.txt").exists());
     assert!(!home.join(".config/test/subdir/other.txt").exists());

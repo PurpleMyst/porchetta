@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
-use porchetta::engine::PorchettaEngine;
 use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
@@ -313,12 +312,8 @@ fn main() -> Result<()> {
             command: ManifestCommand::Edit,
         } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store, InteractiveResolver)
-                .context("Failed to create engine")?;
-
             let editor = porchetta::util::get_editor().context("Failed to determine editor")?;
-
-            engine
+            store
                 .edit_manifest(|content| edit_manifest_with_workspace(&editor, content))
                 .context("Failed to edit manifest")?;
             ui::success("Manifest updated");
@@ -329,11 +324,9 @@ fn main() -> Result<()> {
             offline,
             topics,
         } => {
-            let store = PorchettaStore::load().context("Failed to load store")?;
-            let mut engine = PorchettaEngine::new(store, InteractiveResolver)
-                .context("Failed to create engine")?;
-            engine
-                .sync_topics(dry_run, offline, &topics)
+            PorchettaStore::load()
+                .context("Failed to load store")?
+                .sync_topics(dry_run, offline, &topics, &InteractiveResolver)
                 .context("Failed to sync")?;
         }
         Command::Remote { command } => handle_remote(command)?,
@@ -351,11 +344,10 @@ fn main() -> Result<()> {
             command: MigrateCommand::Chezmoi { source_dir, yes },
         } => {
             let store = PorchettaStore::load().context("Failed to load store")?;
-            let source_dir = source_dir.unwrap_or_else(|| {
-                let home = dirs::home_dir().expect("home directory");
-                Utf8PathBuf::try_from(home.join(".local").join("share").join("chezmoi"))
-                    .expect("chezmoi source path is not valid UTF-8")
-            });
+            let source_dir = match source_dir {
+                Some(dir) => dir,
+                None => porchetta::util::home_dir()?.join(".local/share/chezmoi"),
+            };
             porchetta::chezmoi::migrate(&store, &source_dir, yes)
                 .context("Failed to migrate from chezmoi")?;
         }

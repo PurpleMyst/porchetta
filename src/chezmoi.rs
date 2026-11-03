@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write;
 
 use anyhow::{Context, Result, bail};
@@ -22,27 +22,18 @@ enum FileKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code, clippy::struct_excessive_bools)]
 struct DirAttr {
     target_name: String,
-    exact: bool,
     external: bool,
-    private: bool,
-    read_only: bool,
     remove: bool,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code, clippy::struct_excessive_bools)]
 struct FileAttr {
     target_name: String,
     kind: FileKind,
     template: bool,
     encrypted: bool,
-    executable: bool,
-    private: bool,
-    read_only: bool,
-    empty: bool,
 }
 
 fn parse_dir_name(name: &str) -> Result<DirAttr> {
@@ -56,23 +47,19 @@ fn parse_dir_name(name: &str) -> Result<DirAttr> {
     name = stripped;
     let (external, stripped) = strip_prefix(name, "external_");
     name = stripped;
-    let (exact, stripped) = strip_prefix(name, "exact_");
-    name = stripped;
-    let (private, stripped) = strip_prefix(name, "private_");
-    name = stripped;
-    let (read_only, stripped) = strip_prefix(name, "readonly_");
-    name = stripped;
-
-    let name_prefix: &str;
-    if let Some(rest) = name.strip_prefix("dot_") {
-        name_prefix = ".";
-        name = rest;
-    } else if let Some(rest) = name.strip_prefix("literal_") {
-        name_prefix = "";
-        name = rest;
-    } else {
-        name_prefix = "";
+    for prefix in ["exact_", "private_", "readonly_"] {
+        name = name.strip_prefix(prefix).unwrap_or(name);
     }
+
+    let name_prefix = if let Some(rest) = name.strip_prefix("dot_") {
+        name = rest;
+        "."
+    } else if let Some(rest) = name.strip_prefix("literal_") {
+        name = rest;
+        ""
+    } else {
+        ""
+    };
 
     if name.is_empty() {
         bail!("{original}: invalid directory name");
@@ -80,10 +67,7 @@ fn parse_dir_name(name: &str) -> Result<DirAttr> {
 
     Ok(DirAttr {
         target_name: format!("{name_prefix}{name}"),
-        exact,
         external,
-        private,
-        read_only,
         remove,
     })
 }
@@ -115,10 +99,6 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     };
 
     let mut encrypted = false;
-    let mut private = false;
-    let mut read_only = false;
-    let mut empty = false;
-    let mut executable = false;
 
     if matches!(
         kind,
@@ -126,17 +106,12 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
     ) {
         loop {
             let before = name;
-            for (prefix, flag) in [
-                ("encrypted_", &mut encrypted),
-                ("private_", &mut private),
-                ("readonly_", &mut read_only),
-                ("empty_", &mut empty),
-                ("executable_", &mut executable),
-            ] {
-                if let Some(rest) = name.strip_prefix(prefix) {
-                    *flag = true;
-                    name = rest;
-                }
+            if let Some(rest) = name.strip_prefix("encrypted_") {
+                encrypted = true;
+                name = rest;
+            }
+            for prefix in ["private_", "readonly_", "empty_", "executable_"] {
+                name = name.strip_prefix(prefix).unwrap_or(name);
             }
             if name == before {
                 break;
@@ -175,10 +150,6 @@ fn parse_file_name(name: &str) -> Result<FileAttr> {
         kind,
         template,
         encrypted,
-        executable,
-        private,
-        read_only,
-        empty,
     })
 }
 
@@ -194,73 +165,15 @@ fn strip_prefix<'a>(s: &'a str, prefix: &str) -> (bool, &'a str) {
 }
 
 fn strip_script_condition(name: &str) -> &str {
-    if let Some(rest) = name.strip_prefix("once_") {
-        return rest;
-    }
-    if let Some(rest) = name.strip_prefix("onchange_") {
-        return rest;
-    }
-    name
+    name.strip_prefix("once_")
+        .or_else(|| name.strip_prefix("onchange_"))
+        .unwrap_or(name)
 }
 
 fn strip_script_order(name: &str) -> &str {
-    if let Some(rest) = name.strip_prefix("before_") {
-        return rest;
-    }
-    if let Some(rest) = name.strip_prefix("after_") {
-        return rest;
-    }
-    name
-}
-
-// ─── Special chezmoi files / dirs to skip ────────────────────────────────────
-
-fn is_special_chezmoi_file(name: &str) -> bool {
-    if !name.starts_with(".chezmoi") {
-        return false;
-    }
-    let known = [
-        ".chezmoiignore",
-        ".chezmoiremove",
-        ".chezmoiversion",
-        ".chezmoiroot",
-        ".chezmoi.json.tmpl",
-        ".chezmoi.toml.tmpl",
-        ".chezmoi.yaml.tmpl",
-        ".chezmoidata.json",
-        ".chezmoidata.toml",
-        ".chezmoidata.yaml",
-        ".chezmoiexternal.json",
-        ".chezmoiexternal.toml",
-        ".chezmoiexternal.yaml",
-        ".chezmoiexternal.json.tmpl",
-        ".chezmoiexternal.toml.tmpl",
-        ".chezmoiexternal.yaml.tmpl",
-        ".chezmoiignore.tmpl",
-        ".chezmoiremove.tmpl",
-    ];
-    known.contains(&name)
-}
-
-fn is_special_chezmoi_dir(name: &str) -> bool {
-    let known = [
-        ".chezmoitemplates",
-        ".chezmoiscripts",
-        ".chezmoidata",
-        ".chezmoiexternals",
-    ];
-    known.contains(&name)
-}
-
-// ─── Target entry ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct TargetEntry {
-    target_rel_path: Utf8PathBuf,
-    kind: FileKind,
-    template: bool,
-    encrypted: bool,
+    name.strip_prefix("before_")
+        .or_else(|| name.strip_prefix("after_"))
+        .unwrap_or(name)
 }
 
 // ─── Target path remapping ─────────────────────────────────────────────────
@@ -284,7 +197,7 @@ fn walk_source_dir(
     source_root: &Utf8Path,
     rel_dir: &Utf8Path,
     target_prefix: &Utf8Path,
-    entries: &mut Vec<TargetEntry>,
+    entries: &mut Vec<Utf8PathBuf>,
     warnings: &mut Warnings,
 ) -> Result<()> {
     let abs_dir = source_root.join(rel_dir);
@@ -301,24 +214,9 @@ fn walk_source_dir(
         })?;
         let file_type = entry.file_type()?;
 
-        if file_type.is_dir() && name == ".git" {
-            trace!("skipping .git directory");
+        if (file_type.is_dir() && name == ".git") || name.starts_with(".chezmoi") {
+            trace!("skipping special entry: {name}");
             continue;
-        }
-
-        if name.starts_with(".chezmoi") {
-            if file_type.is_dir() && is_special_chezmoi_dir(&name) {
-                trace!("skipping special chezmoi dir: {name}");
-                continue;
-            }
-            if file_type.is_file() && is_special_chezmoi_file(&name) {
-                trace!("skipping special chezmoi file: {name}");
-                continue;
-            }
-            if name.starts_with(".chezmoi") {
-                trace!("skipping unknown .chezmoi entry: {name}");
-                continue;
-            }
         }
 
         if file_type.is_dir() {
@@ -385,13 +283,7 @@ fn walk_source_dir(
                 warnings.encrypted += 1;
             }
 
-            let target_path = target_prefix.join(&file_attr.target_name);
-            entries.push(TargetEntry {
-                target_rel_path: target_path,
-                kind: file_attr.kind,
-                template: file_attr.template,
-                encrypted: file_attr.encrypted,
-            });
+            entries.push(target_prefix.join(&file_attr.target_name));
         }
     }
 
@@ -410,43 +302,22 @@ struct Warnings {
 }
 
 impl Warnings {
-    fn has_any(&self) -> bool {
-        self.scripts > 0
-            || self.symlinks > 0
-            || self.modifies > 0
-            || self.creates > 0
-            || self.templates > 0
-            || self.encrypted > 0
-            || self.external_dirs > 0
-    }
-
-    fn summary(&self) -> String {
-        let mut parts = Vec::new();
-        if self.scripts > 0 {
-            parts.push(format!("{} script(s) skipped", self.scripts));
-        }
-        if self.symlinks > 0 {
-            parts.push(format!("{} symlink(s) skipped", self.symlinks));
-        }
-        if self.modifies > 0 {
-            parts.push(format!("{} modify script(s) skipped", self.modifies));
-        }
-        if self.creates > 0 {
-            parts.push(format!(
-                "{} create-only file(s) (semantics lost)",
-                self.creates
-            ));
-        }
-        if self.templates > 0 {
-            parts.push(format!("{} template(s) detected", self.templates));
-        }
-        if self.encrypted > 0 {
-            parts.push(format!("{} encrypted file(s) detected", self.encrypted));
-        }
-        if self.external_dirs > 0 {
-            parts.push(format!("{} external dir(s) skipped", self.external_dirs));
-        }
-        parts.join(", ")
+    fn summary(&self) -> Option<String> {
+        let items = [
+            (self.scripts, "script(s) skipped"),
+            (self.symlinks, "symlink(s) skipped"),
+            (self.modifies, "modify script(s) skipped"),
+            (self.creates, "create-only file(s) (semantics lost)"),
+            (self.templates, "template(s) detected"),
+            (self.encrypted, "encrypted file(s) detected"),
+            (self.external_dirs, "external dir(s) skipped"),
+        ];
+        let parts: Vec<String> = items
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, label)| format!("{count} {label}"))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 }
 
@@ -669,11 +540,10 @@ fn extract_topic_root(
 }
 
 fn group_into_topics(
-    entries: Vec<TargetEntry>,
+    entries: Vec<Utf8PathBuf>,
     home: &Utf8Path,
-) -> Result<HashMap<String, TopicGroup>> {
-    let managed_files: HashSet<Utf8PathBuf> =
-        entries.into_iter().map(|e| e.target_rel_path).collect();
+) -> Result<BTreeMap<String, TopicGroup>> {
+    let managed_files: HashSet<Utf8PathBuf> = entries.into_iter().collect();
     let manifest_paths = compute_manifest_paths(&managed_files, home)?;
 
     // Remap AppData paths to .config for cross-platform manifest output.
@@ -685,28 +555,21 @@ fn group_into_topics(
     let remapped_managed: HashSet<Utf8PathBuf> =
         managed_files.iter().map(|p| remap_target_path(p)).collect();
 
-    let mut topics: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
-    let mut seen: HashSet<(String, Utf8PathBuf)> = HashSet::new();
-
+    let mut topics: BTreeMap<String, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
     for path in manifest_paths {
-        let topic = topic_name_for_path(&path);
-        let key = (topic.clone(), path.clone());
-        if seen.insert(key) {
-            topics.entry(topic).or_default().push(path);
-        }
+        topics
+            .entry(topic_name_for_path(&path))
+            .or_default()
+            .insert(path);
     }
 
-    for paths in topics.values_mut() {
-        paths.sort();
-    }
-
-    let mut result = HashMap::new();
-    for (topic, paths) in topics {
-        let (root, rel_paths) = extract_topic_root(&paths, &remapped_managed);
-        result.insert(topic, (root, rel_paths));
-    }
-
-    Ok(result)
+    Ok(topics
+        .into_iter()
+        .map(|(topic, paths)| {
+            let paths: Vec<_> = paths.into_iter().collect();
+            (topic, extract_topic_root(&paths, &remapped_managed))
+        })
+        .collect())
 }
 
 // ─── Manifest serialization ──────────────────────────────────────────────────
@@ -730,17 +593,10 @@ fn escape_lua_string(s: &str) -> String {
     out
 }
 
-fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
-    let mut buf = String::new();
-    buf.push_str("return {\n");
-    buf.push_str("    topics = {\n");
+fn generate_manifest(topics: &BTreeMap<String, TopicGroup>) -> Result<Vec<u8>> {
+    let mut buf = String::from("return {\n    topics = {\n");
 
-    // Sort topic names for deterministic output
-    let mut topic_names: Vec<&String> = topics.keys().collect();
-    topic_names.sort();
-
-    for topic in topic_names {
-        let (root, paths) = &topics[topic];
+    for (topic, (root, paths)) in topics {
         writeln!(&mut buf, "        {} = {{", escape_lua_string(topic))?;
         if let Some(root) = root {
             let r = root.as_str().replace('\\', "/");
@@ -750,29 +606,23 @@ fn generate_manifest(topics: &HashMap<String, TopicGroup>) -> Result<Vec<u8>> {
                 escape_lua_string(&r)
             )?;
         }
-        buf.push_str("            paths = {");
-        for (i, p) in paths.iter().enumerate() {
-            let s = p.as_str().replace('\\', "/");
-            if i == 0 {
-                buf.push('"');
-            } else {
-                buf.push_str(", \"");
-            }
-            buf.push_str(&escape_lua_string(&s));
-            buf.push('"');
-        }
-        buf.push_str("}\n");
+        let quoted_paths: Vec<String> = paths
+            .iter()
+            .map(|p| format!("\"{}\"", escape_lua_string(&p.as_str().replace('\\', "/"))))
+            .collect();
+        writeln!(
+            &mut buf,
+            "            paths = {{{}}}",
+            quoted_paths.join(", ")
+        )?;
         buf.push_str("        },\n");
     }
 
-    buf.push_str("    }\n");
-    buf.push_str("}\n");
-
+    buf.push_str("    }\n}\n");
     let bytes = buf.into_bytes();
 
     // Validate by round-tripping through Manifest::load
-    let _manifest =
-        Manifest::load(&bytes).context("generated manifest failed validation — this is a bug")?;
+    Manifest::load(&bytes).context("generated manifest failed validation — this is a bug")?;
 
     Ok(bytes)
 }
@@ -809,9 +659,7 @@ pub fn migrate(store: &PorchettaStore, source_dir: &Utf8Path, yes: bool) -> Resu
     let entry_count = entries.len();
     debug!("Resolved {entry_count} target entries from chezmoi source");
 
-    let home =
-        Utf8PathBuf::try_from(dirs::home_dir().context("Could not determine home directory")?)
-            .map_err(|e| anyhow::anyhow!("home directory is not valid UTF-8: {e}"))?;
+    let home = crate::util::home_dir()?;
     let topics = group_into_topics(entries, home.as_path())?;
     let topic_count = topics.len();
     let path_count: usize = topics.values().map(|(_, paths)| paths.len()).sum();
@@ -826,26 +674,17 @@ pub fn migrate(store: &PorchettaStore, source_dir: &Utf8Path, yes: bool) -> Resu
         if topic_count == 1 { "" } else { "s" }
     ));
 
-    let mut topic_names: Vec<&String> = topics.keys().collect();
-    topic_names.sort();
-
-    for topic in &topic_names {
-        let (root, paths) = &topics[*topic];
-        let path_list: Vec<String> = paths.iter().map(|p| p.as_str().to_string()).collect();
-        let root_display = root
-            .as_ref()
-            .map(|r| format!(" [{}]", { r }))
-            .unwrap_or_default();
+    for (topic, (root, paths)) in &topics {
+        let path_list: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+        let root_display = root.as_ref().map(|r| format!(" [{r}]")).unwrap_or_default();
         ui::bullet(&format!(
-            "{}{}  ({})",
-            topic,
-            root_display,
+            "{topic}{root_display}  ({})",
             path_list.join(", ")
         ));
     }
 
-    if warnings.has_any() {
-        ui::info(&format!("Warnings: {}", warnings.summary()));
+    if let Some(summary) = warnings.summary() {
+        ui::info(&format!("Warnings: {summary}"));
     }
 
     // ── Confirmation ─────────────────────────────────────────────────────────
@@ -880,17 +719,13 @@ mod tests {
     fn test_parse_dir_name() {
         let d = parse_dir_name("dot_config").unwrap();
         assert_eq!(d.target_name, ".config");
-        assert!(!d.exact);
         assert!(!d.external);
 
         let d = parse_dir_name("exact_dot_ssh").unwrap();
         assert_eq!(d.target_name, ".ssh");
-        assert!(d.exact);
 
         let d = parse_dir_name("exact_private_foo").unwrap();
         assert_eq!(d.target_name, "foo");
-        assert!(d.exact);
-        assert!(d.private);
 
         let d = parse_dir_name("literal_dot_").unwrap();
         assert_eq!(d.target_name, "dot_");
@@ -909,8 +744,6 @@ mod tests {
 
         let f = parse_file_name("private_executable_dot_zshrc").unwrap();
         assert_eq!(f.target_name, ".zshrc");
-        assert!(f.private);
-        assert!(f.executable);
 
         let f = parse_file_name("create_dot_foo").unwrap();
         assert_eq!(f.target_name, ".foo");
@@ -919,7 +752,6 @@ mod tests {
         let f = parse_file_name("encrypted_private_dot_secret.age").unwrap();
         assert_eq!(f.target_name, ".secret");
         assert!(f.encrypted);
-        assert!(f.private);
     }
 
     #[test]
@@ -1005,56 +837,19 @@ mod tests {
         std::fs::create_dir_all(home.join(".local/share")).unwrap(); // unmanaged
         std::fs::write(home.join(".inputrc"), "").unwrap();
 
-        let entries = vec![
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".config/nvim/init.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".config/nvim/lua/plugins.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".bashrc"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".zshrc"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".gitconfig"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".ssh/config"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".local/bin/my-script"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from(".inputrc"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-        ];
+        let entries: Vec<Utf8PathBuf> = [
+            ".config/nvim/init.lua",
+            ".config/nvim/lua/plugins.lua",
+            ".bashrc",
+            ".zshrc",
+            ".gitconfig",
+            ".ssh/config",
+            ".local/bin/my-script",
+            ".inputrc",
+        ]
+        .into_iter()
+        .map(Utf8PathBuf::from)
+        .collect();
 
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 1 entry → not collapsed, so nvim (2 entries but lua is uncollapsed) → not collapsed
@@ -1093,20 +888,13 @@ mod tests {
         std::fs::write(home.join("AppData/Local/nvim/lua/plugins.lua"), "").unwrap();
         std::fs::write(home.join("AppData/Local/nvim/unmanaged.txt"), "").unwrap();
 
-        let entries = vec![
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/init.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-        ];
+        let entries: Vec<Utf8PathBuf> = [
+            "AppData/Local/nvim/init.lua",
+            "AppData/Local/nvim/lua/plugins.lua",
+        ]
+        .into_iter()
+        .map(Utf8PathBuf::from)
+        .collect();
 
         let topics = group_into_topics(entries, home).unwrap();
         // Because of unmanaged.txt, .config/nvim must NOT collapse.
@@ -1129,26 +917,14 @@ mod tests {
         std::fs::write(home.join("AppData/Local/nvim/lua/plugins.lua"), "").unwrap();
         std::fs::write(home.join("AppData/Local/nvim/lua/settings.lua"), "").unwrap();
 
-        let entries = vec![
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/init.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/plugins.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-            TargetEntry {
-                target_rel_path: Utf8PathBuf::from("AppData/Local/nvim/lua/settings.lua"),
-                kind: FileKind::Regular,
-                template: false,
-                encrypted: false,
-            },
-        ];
+        let entries: Vec<Utf8PathBuf> = [
+            "AppData/Local/nvim/init.lua",
+            "AppData/Local/nvim/lua/plugins.lua",
+            "AppData/Local/nvim/lua/settings.lua",
+        ]
+        .into_iter()
+        .map(Utf8PathBuf::from)
+        .collect();
 
         let topics = group_into_topics(entries, home).unwrap();
         // lua has 2 entries → collapses; nvim has 2 entries (init.lua + lua) → collapses
@@ -1161,7 +937,7 @@ mod tests {
 
     #[test]
     fn test_generate_manifest_roundtrip() {
-        let mut topics = HashMap::new();
+        let mut topics = BTreeMap::new();
         topics.insert(
             "shell".to_string(),
             (

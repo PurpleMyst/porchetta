@@ -7,7 +7,6 @@ use lock::StoreLock;
 
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
-use dirs::home_dir;
 use gix::bstr::ByteSlice;
 use log::{debug, info, trace};
 
@@ -261,8 +260,7 @@ impl PorchettaStore {
     ///
     /// Returns an error if the home directory cannot be determined.
     pub fn store_path() -> Result<Utf8PathBuf> {
-        let home = home_dir().context("Could not determine home directory")?;
-        Self::store_path_for(&home)
+        Self::store_path_for(crate::util::home_dir()?.as_std_path())
     }
 
     /// Reads the manifest from the manifest branch head.
@@ -297,16 +295,20 @@ impl PorchettaStore {
         Ok(content)
     }
 
-    /// Writes the manifest to the store.
+    /// Validates and writes the manifest to the store.
     ///
     /// # Errors
     ///
-    /// Returns an error if writing the manifest blob or updating the reference fails.
+    /// Returns an error if the manifest is invalid or writing the manifest blob or reference fails.
     pub fn write_manifest(&self, manifest_content: &[u8]) -> Result<()> {
         debug!(
             "Writing manifest to store ({} bytes)",
             manifest_content.len()
         );
+        crate::manifest::Manifest::load_with_home(
+            manifest_content,
+            crate::util::home_dir().ok().as_deref(),
+        )?;
         let manifest_head = self.head(&Branch::Manifest)?;
         let blob_oid = self
             .repo
@@ -323,6 +325,18 @@ impl PorchettaStore {
         self.update_heads(&[(Branch::Manifest, commit_oid)])?;
         info!("Manifest written successfully");
         Ok(())
+    }
+
+    /// Edits the manifest using the provided editor function.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading, editing, validating, or writing the manifest fails.
+    pub fn edit_manifest(&self, editor: impl FnOnce(&[u8]) -> Result<Vec<u8>>) -> Result<()> {
+        let manifest_content = self.read_manifest()?;
+        let new_manifest_content = editor(&manifest_content)?;
+        self.write_manifest(&new_manifest_content)
+            .context("Edited manifest is invalid")
     }
 
     /// Gets the head commit for a local branch.

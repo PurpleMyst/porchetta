@@ -1,5 +1,5 @@
 use camino::Utf8PathBuf;
-use porchetta::engine::PorchettaEngine;
+use porchetta::engine::resolver::PanickingResolver;
 use porchetta::store::{Branch, PorchettaStore};
 
 #[test]
@@ -27,14 +27,10 @@ fn test_should_include_filters_files() {
     std::fs::write(topic_dir.join("config.txt"), "hello").unwrap();
     std::fs::write(topic_dir.join("debug.log"), "log data").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
-    let store = engine.store();
     let head = store
         .head(&Branch::topic("test"))
         .unwrap()
@@ -85,14 +81,10 @@ fn test_should_include_filters_directory_recursion() {
     std::fs::create_dir_all(topic_dir.join("cache")).unwrap();
     std::fs::write(topic_dir.join("cache").join("file.txt"), "cached").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
 
-    let store = engine.store();
     let head = store
         .head(&Branch::topic("test"))
         .unwrap()
@@ -144,24 +136,9 @@ fn test_sync_skips_disabled_topics() {
     std::fs::create_dir_all(&disabled_dir).unwrap();
     std::fs::write(disabled_dir.join("config.txt"), "disabled").unwrap();
 
-    let mut engine = PorchettaEngine::with_home(
-        store,
-        home.clone(),
-        porchetta::engine::resolver::PanickingResolver,
-    );
-    engine.sync(false, true).unwrap();
-    assert!(
-        engine
-            .store()
-            .head(&Branch::topic("enabled"))
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        engine
-            .store()
-            .head(&Branch::topic("disabled"))
-            .unwrap()
-            .is_none()
-    );
+    store
+        .sync_at(&home, false, true, &[], &PanickingResolver)
+        .unwrap();
+    assert!(store.head(&Branch::topic("enabled")).unwrap().is_some());
+    assert!(store.head(&Branch::topic("disabled")).unwrap().is_none());
 }

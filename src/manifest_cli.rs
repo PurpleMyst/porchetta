@@ -66,9 +66,7 @@ fn emit(value: &Value) -> Result<()> {
 }
 
 fn load(source: &[u8]) -> Result<Manifest> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    let home = Utf8PathBuf::try_from(home)?;
-    Manifest::load_with_home(source, Some(&home))
+    Manifest::load_with_home(source, Some(&porchetta::util::home_dir()?))
 }
 
 pub(crate) fn run(command: ManifestCommand) -> Result<()> {
