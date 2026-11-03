@@ -78,6 +78,7 @@ impl ConflictResolver for InteractiveResolver {
 #[derive(Parser)]
 #[command(
     name = "porchetta",
+    version,
     about = "Dotfile manager with topics and conflict resolution"
 )]
 struct Cli {
