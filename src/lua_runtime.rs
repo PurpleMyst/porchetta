@@ -115,20 +115,20 @@ mod tests {
     fn test_system_echo() {
         let lua = lua_with_porchetta();
         let result: String = lua
-            .load(r#"porchetta.system({"echo", "hi"})"#)
+            .load(r#"porchetta.system({"git", "--version"})"#)
             .eval()
             .unwrap();
-        assert_eq!(result.trim(), "hi");
+        assert!(result.starts_with("git version"));
     }
 
     #[test]
     fn test_system_stdin() {
         let lua = lua_with_porchetta();
         let result: String = lua
-            .load(r#"porchetta.system({"cat"}, "hello")"#)
+            .load(r#"porchetta.system({"git", "hash-object", "--stdin"}, "hello\n")"#)
             .eval()
             .unwrap();
-        assert_eq!(result, "hello");
+        assert_eq!(result.trim(), "ce013625030ba8dba906f756967f9e9ca394464a");
     }
 
     #[test]
@@ -145,7 +145,9 @@ mod tests {
     #[test]
     fn test_system_non_zero_exit() {
         let lua = lua_with_porchetta();
-        let result: mlua::Result<String> = lua.load(r#"porchetta.system({"false"})"#).eval();
+        let result: mlua::Result<String> = lua
+            .load(r#"porchetta.system({"git", "not-a-git-command"})"#)
+            .eval();
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("exited with code"));

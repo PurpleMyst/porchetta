@@ -105,8 +105,9 @@ return {
 - `to_system(path, content) -> string` — called before writing topic content to the filesystem. Use this to restore placeholders like `__HOME__`.
 - `should_include(path) -> boolean` — filters files or directories while scanning. Can be set on a topic or at the top level; both must return `true` for a path to be included.
 
-**NB**: Currently we normalize all valid UTF-8 so that CR-LF becomes just LF; this happens *after*
-the `to_repo` hook and *before* the `to_system` hook. In the future this might be more configurable.
+**NB**: All non-binary content (containing no NUL byte) has CR-LF line endings normalized to LF
+both before and after the `to_repo` hook, and before the `to_system` hook. In the future this might
+be more configurable.
 
 Manifest Lua code has access to a small `porchetta` runtime:
 
@@ -248,7 +249,7 @@ With `sync --offline`, Porchetta skips fetching, remote-history reconciliation, 
 
 ### Topic filter
 
-`sync --topic <NAME>` (or `-t`) limits local synchronization to the named topics; repeat the flag for more than one. Topics that are not named are not captured, applied, or reconciled against fetched remote histories, and the report lists them as filtered out. An unknown name fails before any topic is synchronized and the error lists the manifest's topics.
+`sync --topic <NAME>` (or `-t`) limits local synchronization to the named topics; repeat the flag for more than one. Topics that are not named are not captured, applied, or reconciled against fetched remote histories. An unknown name fails before any topic is synchronized and the error lists the manifest's topics.
 
 Publication follows the filter: a successful filtered sync pushes the manifest and the selected topic branches, leaving unselected branches untouched on every remote.
 
