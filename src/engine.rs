@@ -173,10 +173,7 @@ impl PorchettaStore {
             .collect();
 
         let remotes = if offline { Vec::new() } else { self.remotes()? };
-        for remote in &remotes {
-            self.fetch(remote)
-                .with_context(|| format!("Failed to fetch remote '{}'", remote.name()))?;
-        }
+        self.fetch_remotes(&remotes)?;
 
         let hostname = ::hostname::get()
             .context("Could not get hostname")?
@@ -206,13 +203,14 @@ impl PorchettaStore {
             );
         }
 
-        let (selected_topics, filtered_topics): (Vec<_>, Vec<_>) = manifest
+        let topics: Vec<_> = manifest
             .topics
             .iter()
-            .partition(|topic| selected.is_empty() || selected.contains(&topic.name.as_str()));
+            .filter(|topic| selected.is_empty() || selected.contains(&topic.name.as_str()))
+            .collect();
 
         let reconciled_topics =
-            self.reconcile_topics(&selected_topics, &remotes, &hostname, active_resolver)?;
+            self.reconcile_topics(&topics, &remotes, &hostname, active_resolver)?;
         if !dry_run {
             let mut updates = vec![(Branch::Manifest, manifest_head)];
             for (topic, state) in &reconciled_topics {
@@ -224,7 +222,7 @@ impl PorchettaStore {
         }
 
         let mut summary = SyncSummary::default();
-        for info in selected_topics.iter().copied().filter(|t| t.enabled) {
+        for info in topics.iter().copied().filter(|t| t.enabled) {
             let state = reconciled_topics
                 .get(&info.name)
                 .copied()
@@ -233,20 +231,12 @@ impl PorchettaStore {
             if !dry_run {
                 self.execute_topic_plan(home, &manifest, info, &hostname, &plan)?;
             }
-            Self::report_topic_plan(home, &manifest, info, dry_run, &plan, &mut summary);
+            Self::report_topic_plan(&manifest, info, dry_run, &plan, &mut summary);
         }
 
-        if !filtered_topics.is_empty() {
-            let names: Vec<_> = filtered_topics.iter().map(|t| t.name.as_str()).collect();
-            ui::info(&format!(
-                "  Filtered out {} topic(s): {}",
-                names.len(),
-                names.join(", ")
-            ));
-        }
         summary.print(dry_run);
         if !dry_run {
-            let topic_names: Vec<_> = selected_topics.iter().map(|t| t.name.as_str()).collect();
+            let topic_names: Vec<_> = topics.iter().map(|t| t.name.as_str()).collect();
             self.publish(&remotes, &topic_names)?;
         }
 
@@ -311,8 +301,11 @@ impl PorchettaStore {
         }
         ui::header("Publication");
         let mut failures = Vec::new();
-        for remote in remotes {
-            match self.push_topics(remote, topics) {
+        for (remote, result) in remotes
+            .iter()
+            .zip(self.push_topics_to_remotes(remotes, topics))
+        {
+            match result {
                 Ok(()) => ui::publication(remote.name(), None),
                 Err(error) => {
                     ui::publication(remote.name(), Some(&error.to_string()));
@@ -369,18 +362,23 @@ impl PorchettaStore {
         let ours = self::capture::snapshot_topic(self.repo(), manifest, info, &topic_base)?;
         let theirs = self.tree_oid_at(reconciled.head())?;
         let base = self.tree_oid_at(self.head(&Branch::system(hostname, name))?)?;
-        let mut merge_outcome = self::merge::merge_trees(self.repo(), base, ours, theirs, name)?;
-
-        if let Some(resolver) = resolver {
-            self::merge::resolve_conflicts(self.repo(), resolver, &mut merge_outcome)?;
-        } else if merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
-            Self::report_topic(manifest, name, "conflict", "Needs resolution");
-            self::merge::show_conflicts(&merge_outcome);
-            ui::muted("  run `porchetta sync` to resolve interactively");
-            return Ok(TopicPlan::Conflict);
-        }
-
-        let merged: gix::ObjectId = merge_outcome.tree.write()?.into();
+        let merged: gix::ObjectId = if ours == theirs || theirs == base {
+            ours
+        } else if ours == base {
+            theirs
+        } else {
+            let mut merge_outcome =
+                self::merge::merge_trees(self.repo(), base, ours, theirs, name)?;
+            if let Some(resolver) = resolver {
+                self::merge::resolve_conflicts(self.repo(), resolver, &mut merge_outcome)?;
+            } else if merge_outcome.has_unresolved_conflicts(TreatAsUnresolved::default()) {
+                Self::report_topic(manifest, name, "conflict", "Needs resolution");
+                self::merge::show_conflicts(&merge_outcome);
+                ui::muted("  run `porchetta sync` to resolve interactively");
+                return Ok(TopicPlan::Conflict);
+            }
+            merge_outcome.tree.write()?.into()
+        };
         trace!("Merged tree: {merged}");
 
         let commit_to_repo = matches!(reconciled, Reconciled::NoHistory) || merged != theirs;
@@ -437,7 +435,7 @@ impl PorchettaStore {
                     "captured",
                     &format_change_count("Captured", store_changes.len(), "into store"),
                 );
-                Self::print_file_changes(home, store_changes, None);
+                Self::print_file_changes("Store", store_changes);
             }
             ui::error(&format!(
                 "Topic '{name}' incomplete · machine changes may be partially applied"
@@ -451,7 +449,6 @@ impl PorchettaStore {
     }
 
     fn report_topic_plan(
-        home: &Utf8Path,
         manifest: &Manifest,
         info: &Topic,
         dry_run: bool,
@@ -489,8 +486,8 @@ impl PorchettaStore {
         }
         let status = status_label(dry_run, changed_wrt_repo, changed_wrt_system);
         Self::report_topic(manifest, &info.name, status, &details.join(" · "));
-        Self::print_file_changes(home, store_changes, None);
-        Self::print_file_changes(home, machine_changes, Some(&info.base_dir(home)));
+        Self::print_file_changes("Store", store_changes);
+        Self::print_file_changes("Machine", machine_changes);
         summary.record_synced(
             store_changes.len(),
             machine_changes.len(),
@@ -498,21 +495,9 @@ impl PorchettaStore {
         );
     }
 
-    fn print_file_changes(
-        home: &Utf8Path,
-        changes: &[self::diff::FileChange],
-        base: Option<&Utf8Path>,
-    ) {
+    fn print_file_changes(destination: &str, changes: &[self::diff::FileChange]) {
         for change in changes {
-            if let Some(base) = base {
-                let path = base.join(&change.relative_path);
-                let display = path
-                    .strip_prefix(home)
-                    .map_or_else(|_| path.to_string(), |relative| format!("~/{relative}"));
-                ui::file_change("Machine", change.action(), &display);
-            } else {
-                ui::file_change("Store", change.action(), change.relative_path.as_str());
-            }
+            ui::file_change(destination, change.action(), change.relative_path.as_str());
         }
     }
 
@@ -530,13 +515,17 @@ impl PorchettaStore {
         resolver: Option<&dyn ConflictResolver>,
     ) -> Result<Reconciled> {
         let mut heads: BTreeSet<_> = local.into_iter().chain(remote_heads).collect();
-        let all: Vec<_> = heads.iter().copied().collect();
-        for candidate in &all {
-            for other in &all {
-                if candidate != other && self::merge::is_ancestor(self.repo(), *candidate, *other)?
-                {
-                    heads.remove(candidate);
-                    break;
+        if heads.len() > 1 {
+            let all: Vec<_> = heads.iter().copied().collect();
+            for candidate in &all {
+                for other in &all {
+                    if candidate != other
+                        && heads.contains(other)
+                        && self::merge::is_ancestor(self.repo(), *candidate, *other)?
+                    {
+                        heads.remove(candidate);
+                        break;
+                    }
                 }
             }
         }

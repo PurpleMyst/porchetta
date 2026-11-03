@@ -100,10 +100,11 @@ impl Topic {
     /// # Errors
     ///
     /// Returns an error if the hook call fails or returns a non-string value.
-    pub fn to_repo(&self, path: &str, content: &[u8]) -> Result<Vec<u8>> {
+    pub fn to_repo(&self, path: &str, content: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+        let content = content.into();
         match &self.to_repo {
-            Some(func) => self.run_transform_hook("to_repo", func, path, content),
-            None => Ok(content.to_vec()),
+            Some(func) => self.run_transform_hook("to_repo", func, path, &content),
+            None => Ok(content),
         }
     }
 
@@ -112,10 +113,11 @@ impl Topic {
     /// # Errors
     ///
     /// Returns an error if the hook call fails or returns a non-string value.
-    pub fn to_system(&self, path: &str, content: &[u8]) -> Result<Vec<u8>> {
+    pub fn to_system(&self, path: &str, content: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+        let content = content.into();
         match &self.to_system {
-            Some(func) => self.run_transform_hook("to_system", func, path, content),
-            None => Ok(content.to_vec()),
+            Some(func) => self.run_transform_hook("to_system", func, path, &content),
+            None => Ok(content),
         }
     }
 

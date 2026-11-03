@@ -40,6 +40,10 @@ fn validate_operations(
 }
 
 /// Apply `changes` for `topic` to the filesystem under `topic_base`.
+///
+/// # Errors
+///
+/// Returns an error if any filesystem operation fails.
 pub fn apply(
     repo: &gix::Repository,
     topic: &Topic,
@@ -60,10 +64,10 @@ pub fn apply(
                         )
                     })?;
                 }
-                let blob = repo.find_blob(blob_oid).with_context(|| {
+                let mut blob = repo.find_blob(blob_oid).with_context(|| {
                     format!("Failed to read blob '{blob_oid}' for topic '{topic_name}'")
                 })?;
-                let content = topic.to_system(change.relative_path.as_str(), &blob.data)?;
+                let content = topic.to_system(change.relative_path.as_str(), blob.take_data())?;
                 std::fs::write(&abs_path, content).with_context(|| {
                     format!("Failed to write '{abs_path}' for topic '{topic_name}'")
                 })?;

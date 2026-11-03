@@ -148,9 +148,9 @@ fn sync_and_preview_report_each_change_in_the_correct_direction() {
             ("Store", "add", "local-add"),
             ("Store", "update", "local-update"),
             ("Store", "delete", "local-delete"),
-            ("Machine", "add", "~/.config/demo/store-add"),
-            ("Machine", "update", "~/.config/demo/store-update"),
-            ("Machine", "delete", "~/.config/demo/store-delete"),
+            ("Machine", "add", "store-add"),
+            ("Machine", "update", "store-update"),
+            ("Machine", "delete", "store-delete"),
         ] {
             assert!(
                 changes.contains(&vec![destination, action, path]),
@@ -366,10 +366,6 @@ fn filtered_sync_only_touches_the_named_topic() {
     let report = fixture.success(&["sync", "--offline", "--dry-run", "-t", "config"]);
     assert!(report.contains("Topics selected: config"), "{report}");
     assert!(report.contains("Would capture"), "{report}");
-    assert!(
-        report.contains("Filtered out 1 topic(s): shell"),
-        "{report}"
-    );
     assert_eq!(fixture.head(&config), config_before);
     assert_eq!(fixture.head(&shell), shell_before);
 

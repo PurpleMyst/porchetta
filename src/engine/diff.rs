@@ -39,6 +39,9 @@ pub fn collect_file_changes(
     before: &gix::Tree<'_>,
     after: &gix::Tree<'_>,
 ) -> Result<Vec<FileChange>> {
+    if before.id == after.id {
+        return Ok(Vec::new());
+    }
     let mut operations = Vec::new();
     let mut changes = before.changes()?;
     changes.options(|options| {

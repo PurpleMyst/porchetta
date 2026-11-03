@@ -43,9 +43,14 @@ impl Remote {
 }
 
 impl PorchettaStore {
-    fn git_output(&self, args: &[&str], operation: &str) -> Result<std::process::Output> {
+    fn git_output_at(
+        repo_path: &std::path::Path,
+        args: &[&str],
+        operation: &str,
+    ) -> Result<std::process::Output> {
         let output = std::process::Command::new("git")
-            .current_dir(self.repo.path())
+            .current_dir(repo_path)
+            .args(["-c", "core.filesRefLockTimeout=5000"])
             .args(args)
             .output()
             .with_context(|| format!("Failed to run git {operation}"))?;
@@ -60,6 +65,10 @@ impl PorchettaStore {
         Ok(output)
     }
 
+    fn git_output(&self, args: &[&str], operation: &str) -> Result<std::process::Output> {
+        Self::git_output_at(self.repo.path(), args, operation)
+    }
+
     /// Returns all configured URL remotes in lexical name order.
     ///
     /// # Errors
@@ -67,20 +76,22 @@ impl PorchettaStore {
     /// Returns an error if Git cannot read the remote configuration or it contains
     /// non-UTF-8 data, invalid remote names, or missing or invalid URLs.
     pub fn remotes(&self) -> Result<Vec<Remote>> {
-        let output = self.git_output(&["remote"], "remote list")?;
-        let stdout = std::str::from_utf8(&output.stdout)
-            .context("Git remote list contains non-UTF-8 data")?;
-        let mut names: Vec<_> = stdout.lines().filter(|name| !name.is_empty()).collect();
-        names.sort_unstable();
-
+        let repo = gix::open(self.repo.path())?;
+        let names = repo.remote_names();
         let mut remotes = Vec::with_capacity(names.len());
         for name in names {
+            let name = std::str::from_utf8(name.as_ref())
+                .context("Git remote list contains non-UTF-8 data")?;
             Remote::validate_name(name)?;
-            let operation = format!("remote URL lookup for '{name}'");
-            let output = self.git_output(&["remote", "get-url", name], &operation)?;
-            let url = std::str::from_utf8(&output.stdout)
-                .with_context(|| format!("URL for remote '{name}' is not UTF-8"))?
-                .trim_end_matches(&['\r', '\n'][..]);
+            let remote = repo
+                .find_remote(name)
+                .with_context(|| format!("Failed to read remote '{name}'"))?;
+            let url = remote
+                .url(gix::remote::Direction::Fetch)
+                .with_context(|| format!("Remote '{name}' has no fetch URL"))?
+                .to_bstring();
+            let url = std::str::from_utf8(url.as_ref())
+                .with_context(|| format!("URL for remote '{name}' is not UTF-8"))?;
             remotes.push(Remote::new(name, url)?);
         }
         Ok(remotes)
@@ -113,6 +124,27 @@ impl PorchettaStore {
         Ok(())
     }
 
+    fn fetch_at(repo_path: &std::path::Path, remote: &Remote) -> Result<()> {
+        let name = remote.name();
+        let manifest_refspec = format!("+refs/heads/manifest*:refs/remotes/{name}/manifest*");
+        let topics_refspec = Branch::topic("*").fetch_refspec(name);
+        Self::git_output_at(
+            repo_path,
+            &[
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-auto-maintenance",
+                "--prune",
+                name,
+                &manifest_refspec,
+                &topics_refspec,
+            ],
+            "fetch",
+        )?;
+        Ok(())
+    }
+
     /// Fetches only `manifest` and `topic/*` into this remote's tracking namespace.
     ///
     /// Existing tracking refs are force-updated, while tags and all `system/*` refs
@@ -120,53 +152,49 @@ impl PorchettaStore {
     ///
     /// # Implementation notes
     ///
-    /// Git fails any exact refspec whose ref is missing on the remote, whether the
-    /// refspec comes from the command line or from `remote.<name>.fetch` config;
-    /// only wildcard refspecs tolerate zero matches. The manifest refspec is
-    /// therefore fetched only after `ls-remote` confirms it exists, so a fresh
-    /// remote without a manifest can still be bootstrapped.
-    ///
-    /// `--prune` only covers refs matched by the fetch's refspecs, so when the
-    /// remote has no manifest the stale tracking ref is deleted explicitly.
+    /// Git fails any exact refspec whose ref is missing on the remote, whereas
+    /// wildcard refspecs tolerate zero matches and participate in `--prune`. Using a
+    /// wildcard refspec for `manifest*` allows a single `git fetch --prune` to both
+    /// bootstrap an empty remote and prune a deleted manifest tracking ref.
     ///
     /// # Errors
     ///
     /// Returns an error if the `git` binary is unavailable or the fetch fails.
     pub fn fetch(&self, remote: &Remote) -> Result<()> {
-        let manifest = Branch::Manifest;
-        let manifest_exists = !self
-            .git_output(
-                &["ls-remote", "--heads", remote.name(), &manifest.ref_name()],
-                "ls-remote",
-            )?
-            .stdout
-            .is_empty();
+        Self::fetch_at(self.repo.path(), remote)
+    }
 
-        let manifest_refspec = manifest.fetch_refspec(remote.name());
-        let topics_refspec = Branch::topic("*").fetch_refspec(remote.name());
-        let mut args = vec!["fetch", "--no-tags", "--prune", remote.name()];
-        if manifest_exists {
-            args.push(&manifest_refspec);
-        }
-        args.push(&topics_refspec);
-        self.git_output(&args, "fetch")?;
-        if !manifest_exists {
-            let tracking_ref = manifest.tracking_ref_name(remote.name());
-            self.git_output(&["update-ref", "-d", &tracking_ref], "update-ref")?;
+    /// Fetches all `remotes` concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first fetch error in `remotes` order if any remote fails.
+    pub(crate) fn fetch_remotes(&self, remotes: &[Remote]) -> Result<()> {
+        let repo_path = self.repo.path();
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = remotes
+                .iter()
+                .map(|remote| scope.spawn(move || Self::fetch_at(repo_path, remote)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+                })
+                .collect()
+        });
+        for (remote, result) in remotes.iter().zip(results) {
+            result.with_context(|| format!("Failed to fetch remote '{}'", remote.name()))?;
         }
         Ok(())
     }
 
-    /// Atomically pushes the manifest and declared topic branches to one remote without force.
-    ///
-    /// Missing local topic branches are skipped. No local system refs are pushed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a topic ref or Git operation is invalid, or if the remote
-    /// rejects the non-fast-forward update.
-    pub fn push_topics(&self, remote: &Remote, topics: &[&str]) -> Result<()> {
+    fn push_refspecs(&self, remote: &Remote, topics: &[&str]) -> Result<Option<Vec<String>>> {
         let mut refspecs = vec![format!("{0}:{0}", Branch::Manifest.ref_name())];
+        let mut needs_push =
+            self.head(&Branch::Manifest)? != self.remote_head(remote, &Branch::Manifest)?;
         let mut seen = std::collections::BTreeSet::new();
         for &topic in topics {
             let branch = Branch::topic(topic);
@@ -175,15 +203,76 @@ impl PorchettaStore {
                 .clone()
                 .try_into()
                 .with_context(|| format!("Invalid topic name '{topic}'"))?;
-            if seen.insert(topic) && self.head(&branch)?.is_some() {
+            if seen.insert(topic)
+                && let Some(local_head) = self.head(&branch)?
+            {
+                needs_push |= self.remote_head(remote, &branch)? != Some(local_head);
                 refspecs.push(format!("{ref_name}:{ref_name}"));
             }
         }
+        Ok(needs_push.then_some(refspecs))
+    }
 
+    fn push_refspecs_at(
+        repo_path: &std::path::Path,
+        remote: &Remote,
+        refspecs: &[String],
+    ) -> Result<()> {
         let mut args = vec!["push", "--atomic", remote.name()];
         args.extend(refspecs.iter().map(String::as_str));
-        self.git_output(&args, "push")?;
+        Self::git_output_at(repo_path, &args, "push")?;
         Ok(())
+    }
+
+    /// Atomically pushes the manifest and declared topic branches to one remote without force.
+    ///
+    /// Missing local topic branches are skipped, and the push is elided entirely if
+    /// all target refs already match the remote's tracking refs. No local system refs
+    /// are pushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a topic ref or Git operation is invalid, or if the remote
+    /// rejects the non-fast-forward update.
+    pub fn push_topics(&self, remote: &Remote, topics: &[&str]) -> Result<()> {
+        let Some(refspecs) = self.push_refspecs(remote, topics)? else {
+            return Ok(());
+        };
+        Self::push_refspecs_at(self.repo.path(), remote, &refspecs)
+    }
+
+    /// Atomically pushes the manifest and declared topic branches to all `remotes` concurrently.
+    #[must_use]
+    pub(crate) fn push_topics_to_remotes(
+        &self,
+        remotes: &[Remote],
+        topics: &[&str],
+    ) -> Vec<Result<()>> {
+        let plans: Vec<_> = remotes
+            .iter()
+            .map(|remote| self.push_refspecs(remote, topics))
+            .collect();
+        let repo_path = self.repo.path();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = remotes
+                .iter()
+                .zip(plans)
+                .map(|(remote, plan)| {
+                    scope.spawn(move || match plan? {
+                        Some(refspecs) => Self::push_refspecs_at(repo_path, remote, &refspecs),
+                        None => Ok(()),
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+                })
+                .collect()
+        })
     }
 
     /// Gets the head commit for a branch on a remote.

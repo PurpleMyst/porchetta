@@ -441,8 +441,12 @@ impl PorchettaStore {
         let topic_head = self
             .head(&Branch::topic(topic))?
             .context("Missing topic head for existing topic")?;
-        debug!("Updating topic hostname head for '{hostname}/{topic}' to {topic_head}");
-        self.update_heads(&[(Branch::system(hostname, topic), topic_head)])
+        let system = Branch::system(hostname, topic);
+        if self.head(&system)? != Some(topic_head) {
+            debug!("Updating topic hostname head for '{hostname}/{topic}' to {topic_head}");
+            self.update_heads(&[(system, topic_head)])?;
+        }
+        Ok(())
     }
 
     // -- compound operations --
