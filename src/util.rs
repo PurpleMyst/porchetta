@@ -39,6 +39,39 @@ fn is_in_path(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
+/// Computes the relative path from `from_dir` to `to_path`.
+///
+/// Both paths should share a common base (e.g. both under home).
+/// Returns a relative path suitable for a symlink placed in `from_dir` pointing to `to_path`.
+#[must_use]
+pub fn relative_path_between(
+    from_dir: &camino::Utf8Path,
+    to_path: &camino::Utf8Path,
+) -> Utf8PathBuf {
+    let from_components: Vec<_> = from_dir.components().collect();
+    let to_components: Vec<_> = to_path.components().collect();
+
+    let mut common_len = 0;
+    while common_len < from_components.len()
+        && common_len < to_components.len()
+        && from_components[common_len] == to_components[common_len]
+    {
+        common_len += 1;
+    }
+
+    let mut result = Utf8PathBuf::new();
+    for _ in common_len..from_components.len() {
+        result.push("..");
+    }
+    for component in &to_components[common_len..] {
+        result.push(component.as_str());
+    }
+    if result.as_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +132,46 @@ mod tests {
         }
 
         assert_eq!(get_editor().unwrap(), "my-visual-editor");
+    }
+
+    #[test]
+    fn test_relative_path_between() {
+        use camino::Utf8Path;
+
+        // Sibling directories
+        assert_eq!(
+            relative_path_between(
+                Utf8Path::new("/home/user/.gemini"),
+                Utf8Path::new("/home/user/.pi/agent/AGENTS.md")
+            ),
+            Utf8Path::new("../.pi/agent/AGENTS.md")
+        );
+
+        // Same directory
+        assert_eq!(
+            relative_path_between(
+                Utf8Path::new("/home/user/.gemini"),
+                Utf8Path::new("/home/user/.gemini/skills")
+            ),
+            Utf8Path::new("skills")
+        );
+
+        // Nested link directory
+        assert_eq!(
+            relative_path_between(
+                Utf8Path::new("/home/user/.gemini/sub/dir"),
+                Utf8Path::new("/home/user/.pi/agent/skills")
+            ),
+            Utf8Path::new("../../../.pi/agent/skills")
+        );
+
+        // Target at root of base
+        assert_eq!(
+            relative_path_between(
+                Utf8Path::new("/home/user/.gemini"),
+                Utf8Path::new("/home/user/root_file")
+            ),
+            Utf8Path::new("../root_file")
+        );
     }
 }

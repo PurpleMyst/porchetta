@@ -92,6 +92,14 @@ return {
             root = ".pi/agent/skills",
             paths = { "." },  -- sync the whole directory
         },
+        agy = {
+            root = ".gemini",
+            paths = { "config.json" },
+            symlinks = {
+                ["GEMINI.md"] = porchetta.topic("pi_agent") / "AGENTS.md",
+                ["skills"] = porchetta.topics.pi_agent_skills,
+            },
+        },
     },
     should_include = function(path)
         return not path:match("node_modules") and not path:match("dist")
@@ -101,6 +109,7 @@ return {
 
 - `root` — base directory for the topic's paths. Can be a computed value (e.g. platform-dependent).
 - `paths` — files or directories to sync, relative to `root` (or home if `root` is omitted). Use `"."` to capture an entire directory.
+- `symlinks` — mapping of link paths (relative to `root`) to targets. Targets can be a literal relative path string or a topic reference like `porchetta.topic("name") / "subpath"`. Relative paths across topic roots are computed automatically.
 - `to_repo(path, content) -> string` — called before storing topic content in the repo. Use this to scrub local paths, strip secrets, or normalize content.
 - `to_system(path, content) -> string` — called before writing topic content to the filesystem. Use this to restore placeholders like `__HOME__`.
 - `should_include(path) -> boolean` — filters files or directories while scanning. Can be set on a topic or at the top level; both must return `true` for a path to be included.
@@ -111,6 +120,7 @@ be more configurable.
 
 Manifest Lua code has access to a small `porchetta` runtime:
 
+- `porchetta.topic(name)` / `porchetta.topics.<name>` creates a symbolic reference to another topic that supports `/` path arithmetic (e.g. `porchetta.topic("pi_agent") / "AGENTS.md"`).
 - `porchetta.json.decode(content)` parses JSON into Lua tables and values. Decoded JSON arrays and objects keep their shape when encoded again, including empty arrays (`[]`) and empty objects (`{}`).
 - `porchetta.json.encode(value)` serializes a Lua value as compact JSON.
 - `porchetta.json.encode_pretty(value)` serializes a Lua value as pretty-printed JSON.

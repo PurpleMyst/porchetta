@@ -172,6 +172,12 @@ fn execute(command: ManifestCommand) -> Result<()> {
                         "enabled": topic.enabled,
                         "root": topic.root.as_ref().map(|p| p.as_str()),
                         "paths": topic.paths.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+                        "symlinks": topic.symlinks.iter().map(|s| {
+                            json!({
+                                "link": s.link.as_str(),
+                                "target": s.target.as_str(),
+                            })
+                        }).collect::<Vec<_>>(),
                         "hooks": {
                             "to_repo": topic.to_repo.is_some(),
                             "to_system": topic.to_system.is_some(),

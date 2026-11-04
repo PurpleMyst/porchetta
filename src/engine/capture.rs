@@ -64,6 +64,10 @@ pub fn snapshot_topic(
             debug!("Excluding '{path}' based on should_include hook");
             continue;
         }
+        if file_type.is_symlink() {
+            trace!("Skipping symlink at '{path}'");
+            continue;
+        }
         if file_type.is_file() {
             trace!("Found file: {path}");
             let content = normalize_line_endings(

@@ -37,24 +37,66 @@ impl std::fmt::Debug for Manifest {
     }
 }
 
-pub struct Topic {
+/// State marker for a topic whose symlink targets may still contain unresolved topic references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unresolved;
+
+/// State marker for a topic whose symlink targets are fully resolved to relative paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolved;
+
+pub trait SymlinkState: 'static + std::fmt::Debug {
+    type Target: std::fmt::Debug + Clone + PartialEq + Eq;
+}
+
+impl SymlinkState for Unresolved {
+    type Target = RawSymlinkTarget;
+}
+
+impl SymlinkState for Resolved {
+    type Target = Utf8PathBuf;
+}
+
+/// A raw symlink target before resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawSymlinkTarget {
+    Literal(Utf8PathBuf),
+    TopicRef {
+        topic: String,
+        subpath: Option<Utf8PathBuf>,
+    },
+}
+
+/// A symlink managed as part of a topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symlink<S: SymlinkState = Resolved> {
+    /// Link location relative to topic root.
+    pub link: Utf8PathBuf,
+    /// Symlink target (either raw reference or relative path).
+    pub target: S::Target,
+}
+
+pub struct Topic<S: SymlinkState = Resolved> {
     pub name: String,
     pub enabled: bool,
     lua: Lua,
     pub root: Option<Utf8PathBuf>,
     pub paths: Vec<Utf8PathBuf>,
+    pub symlinks: Vec<Symlink<S>>,
     pub to_repo: Option<mlua::Function>,
     pub to_system: Option<mlua::Function>,
     pub should_include: Option<mlua::Function>,
+    _state: std::marker::PhantomData<S>,
 }
 
-impl std::fmt::Debug for Topic {
+impl<S: SymlinkState> std::fmt::Debug for Topic<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Topic")
             .field("name", &self.name)
             .field("enabled", &self.enabled)
             .field("root", &self.root)
             .field("paths", &self.paths)
+            .field("symlinks", &self.symlinks)
             .field("has_to_repo", &self.to_repo.is_some())
             .field("has_to_system", &self.to_system.is_some())
             .field("has_should_include", &self.should_include.is_some())
@@ -63,7 +105,7 @@ impl std::fmt::Debug for Topic {
     }
 }
 
-impl Topic {
+impl<S: SymlinkState> Topic<S> {
     fn run_transform_hook(
         &self,
         hook_name: &str,
@@ -142,7 +184,9 @@ impl Topic {
             path,
         )
     }
+}
 
+impl Topic<Resolved> {
     fn validate(&self) -> Result<()> {
         if let Some(root) = &self.root {
             ensure_relative_path(root, &format!("Topic '{}' root", self.name), PathKind::Root)
@@ -172,6 +216,38 @@ impl Topic {
                 })?;
         }
 
+        for symlink in &self.symlinks {
+            ensure_relative_path(
+                &symlink.link,
+                &format!("Topic '{}' symlink link", self.name),
+                PathKind::SymlinkLink,
+            )
+            .map_err(|error| {
+                let message = error.to_string();
+                error.context(Diagnostic {
+                    message,
+                    code: "invalid_path",
+                    topic: Some(self.name.clone()),
+                    field: Some("symlinks"),
+                    value: Some(symlink.link.to_string()),
+                })
+            })?;
+
+            ensure!(
+                !symlink.target.is_absolute() && !symlink.target.has_root(),
+                "Topic '{}' symlink target '{}' must be relative",
+                self.name,
+                symlink.target
+            );
+
+            ensure!(
+                !self.paths.contains(&symlink.link),
+                "Topic '{}' path '{}' cannot be both in paths and symlinks",
+                self.name,
+                symlink.link
+            );
+        }
+
         Ok(())
     }
 }
@@ -180,6 +256,7 @@ impl Topic {
 enum PathKind {
     Root,
     Path,
+    SymlinkLink,
 }
 
 fn ensure_relative_path(path: &Utf8Path, label: &str, kind: PathKind) -> Result<()> {
@@ -193,6 +270,10 @@ fn ensure_relative_path(path: &Utf8Path, label: &str, kind: PathKind) -> Result<
     );
     if matches!(kind, PathKind::Root) {
         ensure!(path != Utf8Path::new("."), "{label} may not be '.'");
+    }
+    if matches!(kind, PathKind::SymlinkLink) {
+        ensure!(path != Utf8Path::new("."), "{label} may not be '.'");
+        ensure!(!path.as_str().is_empty(), "{label} may not be empty");
     }
 
     Ok(())
@@ -338,12 +419,24 @@ impl Manifest {
             ),
         };
 
-        let mut topics: Vec<Topic> = manifest_table
+        let parsed_topics: Vec<Topic<Unresolved>> = manifest_table
             .get::<std::collections::HashMap<String, std::collections::HashMap<String, Value>>>(
                 "topics",
             )?
             .into_iter()
             .map(|(name, topic)| Topic::parse(name, &topic, &lua, home))
+            .collect::<Result<_>>()?;
+
+        let topic_roots: std::collections::HashMap<String, Option<Utf8PathBuf>> = parsed_topics
+            .iter()
+            .map(|t| (t.name.clone(), t.root.clone()))
+            .collect();
+
+        let base_home = home.unwrap_or_else(|| Utf8Path::new("/dummy_home"));
+
+        let mut topics: Vec<Topic<Resolved>> = parsed_topics
+            .into_iter()
+            .map(|topic| topic.resolve(&topic_roots, base_home))
             .collect::<Result<_>>()?;
 
         topics.sort_by(|a, b| a.name.cmp(&b.name));
@@ -361,7 +454,7 @@ impl Manifest {
     }
 }
 
-impl Topic {
+impl Topic<Unresolved> {
     fn parse(
         name: String,
         topic: &std::collections::HashMap<String, Value>,
@@ -379,6 +472,42 @@ impl Topic {
         let paths: Vec<Utf8PathBuf> = paths.into_iter().map(Utf8PathBuf::from).collect();
 
         trace!("Topic '{}' has {} paths", name, paths.len());
+
+        let symlinks = match topic.get("symlinks") {
+            Some(Value::Table(t)) => {
+                let mut links = Vec::new();
+                for pair in t.clone().pairs::<String, Value>() {
+                    let (link, target_val) = pair?;
+                    let target = match target_val {
+                        Value::String(s) => {
+                            RawSymlinkTarget::Literal(Utf8PathBuf::from(s.to_str()?.as_ref()))
+                        }
+                        Value::Table(ref tbl) if tbl.contains_key("__topic")? => {
+                            let topic_ref: String = tbl.get("__topic")?;
+                            let subpath: Option<String> = tbl.get("__path")?;
+                            RawSymlinkTarget::TopicRef {
+                                topic: topic_ref,
+                                subpath: subpath.map(Utf8PathBuf::from),
+                            }
+                        }
+                        other => bail!(
+                            "Topic '{name}' symlink '{link}' must be a string or topic reference, got {}",
+                            other.type_name()
+                        ),
+                    };
+                    links.push(Symlink {
+                        link: Utf8PathBuf::from(link),
+                        target,
+                    });
+                }
+                links
+            }
+            Some(Value::Nil) | None => Vec::new(),
+            Some(v) => bail!(
+                "Topic '{name}' field 'symlinks' must be a table, got {}",
+                v.type_name()
+            ),
+        };
 
         let mut root = match topic.get("root") {
             Some(Value::String(s)) => {
@@ -418,9 +547,70 @@ impl Topic {
             enabled,
             root,
             paths,
+            symlinks,
             to_repo,
             to_system,
             should_include,
+            _state: std::marker::PhantomData,
+        })
+    }
+
+    fn resolve(
+        self,
+        topic_roots: &std::collections::HashMap<String, Option<Utf8PathBuf>>,
+        base_home: &Utf8Path,
+    ) -> Result<Topic<Resolved>> {
+        let topic_base = self.base_dir(base_home);
+        let mut resolved_symlinks = Vec::with_capacity(self.symlinks.len());
+        for symlink in self.symlinks {
+            let target = match symlink.target {
+                RawSymlinkTarget::Literal(p) => p,
+                RawSymlinkTarget::TopicRef {
+                    topic: target_name,
+                    subpath,
+                } => {
+                    let target_root = topic_roots.get(&target_name).ok_or_else(|| {
+                        anyhow::Error::from(Diagnostic {
+                            message: format!(
+                                "Topic '{}' symlink '{}' references unknown topic '{target_name}'",
+                                self.name, symlink.link
+                            ),
+                            code: "unknown_topic",
+                            topic: Some(self.name.clone()),
+                            field: Some("symlinks"),
+                            value: Some(target_name.clone()),
+                        })
+                    })?;
+                    let target_base = target_root
+                        .as_ref()
+                        .map_or_else(|| base_home.to_owned(), |r| base_home.join(r));
+                    let to_path = match subpath {
+                        Some(sub) => target_base.join(sub),
+                        None => target_base,
+                    };
+                    let link_abs = topic_base.join(&symlink.link);
+                    let from_dir = link_abs.parent().unwrap_or(topic_base.as_path());
+                    crate::util::relative_path_between(from_dir, &to_path)
+                }
+            };
+            resolved_symlinks.push(Symlink {
+                link: symlink.link,
+                target,
+            });
+        }
+        resolved_symlinks.sort_by(|a, b| a.link.cmp(&b.link));
+
+        Ok(Topic {
+            name: self.name,
+            enabled: self.enabled,
+            lua: self.lua,
+            root: self.root,
+            paths: self.paths,
+            symlinks: resolved_symlinks,
+            to_repo: self.to_repo,
+            to_system: self.to_system,
+            should_include: self.should_include,
+            _state: std::marker::PhantomData,
         })
     }
 
@@ -920,5 +1110,124 @@ mod tests {
         assert!(manifest.includes(topic, "gitconfig").unwrap());
         assert!(!manifest.includes(topic, "foo.bak").unwrap());
         assert!(!manifest.includes(topic, ".gitconfig").unwrap());
+    }
+
+    #[test]
+    fn test_manifest_symlinks_topic_reference() {
+        let manifest = Manifest::load(
+            br#"return {
+                topics = {
+                    pi_agent = {
+                        root = ".pi/agent",
+                        paths = {"AGENTS.md", "skills"},
+                    },
+                    agy = {
+                        root = ".gemini",
+                        paths = {"config.json"},
+                        symlinks = {
+                            ["GEMINI.md"] = porchetta.topic("pi_agent") / "AGENTS.md",
+                            ["skills"] = porchetta.topics.pi_agent / "skills",
+                        },
+                    },
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let agy = manifest.topics.iter().find(|t| t.name == "agy").unwrap();
+        assert_eq!(agy.symlinks.len(), 2);
+        assert_eq!(agy.symlinks[0].link, "GEMINI.md");
+        assert_eq!(agy.symlinks[0].target, "../.pi/agent/AGENTS.md");
+        assert_eq!(agy.symlinks[1].link, "skills");
+        assert_eq!(agy.symlinks[1].target, "../.pi/agent/skills");
+    }
+
+    #[test]
+    fn test_manifest_symlinks_literal_string() {
+        let manifest = Manifest::load(
+            br#"return {
+                topics = {
+                    agy = {
+                        root = ".gemini",
+                        paths = {"config.json"},
+                        symlinks = {
+                            ["GEMINI.md"] = "../.pi/agent/AGENTS.md",
+                        },
+                    },
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let agy = &manifest.topics[0];
+        assert_eq!(agy.symlinks.len(), 1);
+        assert_eq!(agy.symlinks[0].link, "GEMINI.md");
+        assert_eq!(agy.symlinks[0].target, "../.pi/agent/AGENTS.md");
+    }
+
+    #[test]
+    fn test_manifest_symlinks_unknown_topic() {
+        let err = Manifest::load(
+            br#"return {
+                topics = {
+                    agy = {
+                        root = ".gemini",
+                        paths = {"config.json"},
+                        symlinks = {
+                            ["GEMINI.md"] = porchetta.topic("nonexistent") / "AGENTS.md",
+                        },
+                    },
+                }
+            }"#,
+        )
+        .unwrap_err();
+
+        let diag = err.downcast_ref::<Diagnostic>().unwrap();
+        assert_eq!(diag.code, "unknown_topic");
+        assert!(diag.message.contains("unknown topic 'nonexistent'"));
+    }
+
+    #[test]
+    fn test_manifest_symlinks_rejects_paths_overlap() {
+        let err = Manifest::load(
+            br#"return {
+                topics = {
+                    agy = {
+                        root = ".gemini",
+                        paths = {"GEMINI.md"},
+                        symlinks = {
+                            ["GEMINI.md"] = "target.md",
+                        },
+                    },
+                }
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("cannot be both in paths and symlinks")
+        );
+    }
+
+    #[test]
+    fn test_manifest_symlinks_rejects_parent_dir_in_link() {
+        let err = Manifest::load(
+            br#"return {
+                topics = {
+                    agy = {
+                        root = ".gemini",
+                        paths = {"config.json"},
+                        symlinks = {
+                            ["../escape.md"] = "target.md",
+                        },
+                    },
+                }
+            }"#,
+        )
+        .unwrap_err();
+
+        let diag = err.downcast_ref::<Diagnostic>().unwrap();
+        assert_eq!(diag.code, "invalid_path");
     }
 }

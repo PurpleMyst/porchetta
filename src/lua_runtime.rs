@@ -86,6 +86,42 @@ fn hostname(lua: &Lua, _: ()) -> mlua::Result<mlua::LuaString> {
     lua.create_string(hostname.to_string_lossy().as_bytes())
 }
 
+fn create_topic_ref(lua: &Lua, topic_name: String, path: Option<String>) -> mlua::Result<Table> {
+    let tbl = lua.create_table()?;
+    tbl.set("__topic", topic_name)?;
+    if let Some(p) = path {
+        tbl.set("__path", p)?;
+    }
+
+    let mt = lua.create_table()?;
+    mt.set(
+        "__div",
+        lua.create_function(|lua, (target, subpath): (Table, String)| {
+            let topic: String = target.get("__topic")?;
+            let current_path: Option<String> = target.get("__path")?;
+            let next_path = match current_path {
+                Some(existing) => format!("{existing}/{subpath}"),
+                None => subpath,
+            };
+            create_topic_ref(lua, topic, Some(next_path))
+        })?,
+    )?;
+    mt.set(
+        "__tostring",
+        lua.create_function(|_lua, target: Table| {
+            let topic: String = target.get("__topic")?;
+            let current_path: Option<String> = target.get("__path")?;
+            match current_path {
+                Some(p) => Ok(format!("porchetta.topic('{topic}')/{p}")),
+                None => Ok(format!("porchetta.topic('{topic}')")),
+            }
+        })?,
+    )?;
+
+    tbl.set_metatable(Some(mt))?;
+    Ok(tbl)
+}
+
 /// Create the `porchetta` Lua runtime table.
 ///
 /// # Errors
@@ -96,6 +132,21 @@ pub(crate) fn create_porchetta_table(lua: &Lua) -> mlua::Result<Table> {
     porchetta_tbl.set("system", lua.create_function(system)?)?;
     porchetta_tbl.set("hostname", lua.create_function(hostname)?)?;
     porchetta_tbl.set("json", json::create_table(lua)?)?;
+
+    let topic_fn = lua.create_function(|lua, name: String| create_topic_ref(lua, name, None))?;
+    porchetta_tbl.set("topic", topic_fn.clone())?;
+
+    let topics_tbl = lua.create_table()?;
+    let topics_mt = lua.create_table()?;
+    topics_mt.set(
+        "__index",
+        lua.create_function(move |lua, (_, name): (Table, String)| {
+            create_topic_ref(lua, name, None)
+        })?,
+    )?;
+    topics_tbl.set_metatable(Some(topics_mt))?;
+    porchetta_tbl.set("topics", topics_tbl)?;
+
     Ok(porchetta_tbl)
 }
 
@@ -129,6 +180,36 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(result.trim(), "ce013625030ba8dba906f756967f9e9ca394464a");
+    }
+
+    #[test]
+    fn test_topic_ref_div_operator() {
+        let lua = lua_with_porchetta();
+        let result: Table = lua
+            .load(r#"porchetta.topic("pi_agent") / "AGENTS.md""#)
+            .eval()
+            .unwrap();
+        assert_eq!(result.get::<String>("__topic").unwrap(), "pi_agent");
+        assert_eq!(result.get::<String>("__path").unwrap(), "AGENTS.md");
+
+        let tostring: String = lua
+            .load(r#"tostring(porchetta.topic("pi_agent") / "AGENTS.md")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(tostring, "porchetta.topic('pi_agent')/AGENTS.md");
+
+        // Chaining
+        let chained: Table = lua
+            .load(r#"porchetta.topics.pi_agent / "skills" / "sub""#)
+            .eval()
+            .unwrap();
+        assert_eq!(chained.get::<String>("__topic").unwrap(), "pi_agent");
+        assert_eq!(chained.get::<String>("__path").unwrap(), "skills/sub");
+
+        // Bare topic
+        let bare: Table = lua.load(r"porchetta.topics.pi_agent").eval().unwrap();
+        assert_eq!(bare.get::<String>("__topic").unwrap(), "pi_agent");
+        assert!(bare.get::<Option<String>>("__path").unwrap().is_none());
     }
 
     #[test]
@@ -166,6 +247,6 @@ mod tests {
     fn test_hostname() {
         let lua = lua_with_porchetta();
         let result: String = lua.load(r"porchetta.hostname()").eval().unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result, "");
     }
 }

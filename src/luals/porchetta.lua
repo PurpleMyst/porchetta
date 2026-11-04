@@ -31,10 +31,21 @@ function PorchettaJson.encode(value) end
 ---@return string json pretty-printed JSON content.
 function PorchettaJson.encode_pretty(value) end
 
+---Symbolic reference to another topic or a path within it.
+---@class PorchettaTopicRef
+---@operator div(string): PorchettaTopicRef
+local PorchettaTopicRef = {}
+
 ---Porchetta manifest runtime helpers.
 ---@class Porchetta
 ---@field json PorchettaJson JSON helpers.
+---@field topics table<string, PorchettaTopicRef> Topic references accessed by name.
 local Porchetta = {}
+
+---Create a symbolic reference to a topic by name.
+---@param name string topic name.
+---@return PorchettaTopicRef ref topic reference.
+function Porchetta.topic(name) end
 
 ---Run an external command and return stdout.
 ---@param args string[] command and arguments; the first item is the executable.

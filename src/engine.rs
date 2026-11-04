@@ -12,7 +12,7 @@ use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace};
 
 use self::resolver::ConflictResolver;
-use crate::manifest::{Manifest, Topic};
+use crate::manifest::{Manifest, Symlink, Topic};
 use crate::store::{Branch, PorchettaStore, Remote};
 use crate::ui;
 
@@ -45,6 +45,7 @@ enum TopicPlan {
         commit_to_repo: bool,
         store_changes: Vec<self::diff::FileChange>,
         machine_changes: Vec<self::diff::FileChange>,
+        symlink_changes: Vec<Symlink>,
     },
 }
 
@@ -388,12 +389,122 @@ impl PorchettaStore {
         let machine_changes =
             self::diff::collect_file_changes(&self.repo().find_tree(ours)?, &merged_tree)?;
 
+        let mut symlink_changes = Vec::new();
+        for symlink in &info.symlinks {
+            let link_abs = topic_base.join(&symlink.link);
+            match std::fs::symlink_metadata(&link_abs) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() {
+                        let current = std::fs::read_link(&link_abs)
+                            .with_context(|| format!("Failed to read symlink '{link_abs}'"))?;
+                        let current_str = current.to_string_lossy();
+                        if current_str != symlink.target.as_str() {
+                            symlink_changes.push(symlink.clone());
+                        }
+                    } else {
+                        Self::report_topic(
+                            manifest,
+                            name,
+                            "conflict",
+                            &format!(
+                                "Path '{}' conflicts with existing {}",
+                                symlink.link,
+                                if meta.is_dir() { "directory" } else { "file" }
+                            ),
+                        );
+                        return Ok(TopicPlan::Conflict);
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    symlink_changes.push(symlink.clone());
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("Failed to inspect path '{link_abs}' for topic '{name}'")
+                    });
+                }
+            }
+        }
+
         Ok(TopicPlan::Ready {
             merged,
             commit_to_repo,
             store_changes,
             machine_changes,
+            symlink_changes,
         })
+    }
+
+    #[cfg(not(windows))]
+    fn apply_symlink(
+        _home: &Utf8Path,
+        _manifest: &Manifest,
+        link_path: &Utf8Path,
+        target: &Utf8Path,
+    ) -> Result<()> {
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directory '{parent}'"))?;
+        }
+
+        if std::fs::symlink_metadata(link_path).is_ok() {
+            std::fs::remove_file(link_path)
+                .with_context(|| format!("Failed to remove old symlink '{link_path}'"))?;
+        }
+
+        std::os::unix::fs::symlink(target, link_path)
+            .with_context(|| format!("Failed to create symlink '{link_path}' -> '{target}'"))?;
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn apply_symlink(
+        home: &Utf8Path,
+        manifest: &Manifest,
+        link_path: &Utf8Path,
+        target: &Utf8Path,
+    ) -> Result<()> {
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directory '{parent}'"))?;
+        }
+
+        if std::fs::symlink_metadata(link_path).is_ok() {
+            if link_path.is_dir() {
+                std::fs::remove_dir(link_path).with_context(|| {
+                    format!("Failed to remove old symlink directory '{link_path}'")
+                })?;
+            } else {
+                std::fs::remove_file(link_path)
+                    .with_context(|| format!("Failed to remove old symlink file '{link_path}'"))?;
+            }
+        }
+
+        // Porchetta creates relative symlinks. On Windows, CreateSymbolicLinkW requires
+        // knowing whether the relative target resolves to a file or a directory.
+        let target_abs = match link_path.parent() {
+            Some(parent) => parent.join(target),
+            None => target.to_path_buf(),
+        };
+        let is_dir = target_abs.is_dir()
+            || manifest
+                .topics
+                .iter()
+                .any(|t| target_abs == t.base_dir(home));
+
+        if is_dir {
+            std::os::windows::fs::symlink_dir(target, link_path)
+        } else {
+            std::os::windows::fs::symlink_file(target, link_path)
+        }
+        .with_context(|| {
+            format!(
+                "Failed to create symlink '{link_path}' -> '{target}' (ensure Windows Developer Mode is enabled)"
+            )
+        })?;
+
+        Ok(())
     }
 
     fn execute_topic_plan(
@@ -409,6 +520,7 @@ impl PorchettaStore {
             commit_to_repo,
             store_changes,
             machine_changes,
+            symlink_changes,
         } = plan
         else {
             return Ok(());
@@ -443,6 +555,16 @@ impl PorchettaStore {
             return Err(error);
         }
 
+        for change in symlink_changes {
+            let link_abs = topic_base.join(&change.link);
+            Self::apply_symlink(home, manifest, &link_abs, &change.target).with_context(|| {
+                format!(
+                    "Failed to create symlink '{}' for topic '{name}'",
+                    change.link
+                )
+            })?;
+        }
+
         self.update_topic_hostname_head(name, hostname)?;
         info!("Synchronized topic '{name}'");
         Ok(())
@@ -459,6 +581,7 @@ impl PorchettaStore {
             commit_to_repo,
             store_changes,
             machine_changes,
+            symlink_changes,
             ..
         } = plan
         else {
@@ -467,7 +590,7 @@ impl PorchettaStore {
         };
 
         let changed_wrt_repo = *commit_to_repo;
-        let changed_wrt_system = !machine_changes.is_empty();
+        let changed_wrt_system = !machine_changes.is_empty() || !symlink_changes.is_empty();
         let mut details = Vec::new();
         if changed_wrt_repo {
             let verb = if dry_run { "Would capture" } else { "Captured" };
@@ -475,11 +598,8 @@ impl PorchettaStore {
         }
         if changed_wrt_system {
             let verb = if dry_run { "Would apply" } else { "Applied" };
-            details.push(format_change_count(
-                verb,
-                machine_changes.len(),
-                "to machine",
-            ));
+            let total_system = machine_changes.len() + symlink_changes.len();
+            details.push(format_change_count(verb, total_system, "to machine"));
         }
         if details.is_empty() {
             details.push("Unchanged".into());
@@ -488,9 +608,12 @@ impl PorchettaStore {
         Self::report_topic(manifest, &info.name, status, &details.join(" · "));
         Self::print_file_changes("Store", store_changes);
         Self::print_file_changes("Machine", machine_changes);
+        for symlink in symlink_changes {
+            ui::file_change("Machine", "link", symlink.link.as_str());
+        }
         summary.record_synced(
             store_changes.len(),
-            machine_changes.len(),
+            machine_changes.len() + symlink_changes.len(),
             changed_wrt_repo || changed_wrt_system,
         );
     }

@@ -119,7 +119,7 @@ fn manifest_write_roundtrip_and_stale_revision_protection() {
     let inspect: Value = serde_json::from_slice(&inspect.stdout).unwrap();
     assert_eq!(
         inspect["topics"],
-        json!([{"name":"git", "enabled":false, "root":".config/git", "paths":["config"], "hooks":{"to_repo":false,"to_system":false,"should_include":true}}])
+        json!([{"name":"git", "enabled":false, "root":".config/git", "paths":["config"], "symlinks":[], "hooks":{"to_repo":false,"to_system":false,"should_include":true}}])
     );
 }
 
