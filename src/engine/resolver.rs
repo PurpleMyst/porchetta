@@ -1,11 +1,23 @@
 use anyhow::Result;
 
 /// Resolution strategy for a tree-level merge conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeConflictResolution {
     /// Keep the local (ours) side.
     KeepOurs,
     /// Keep the remote (theirs) side.
     KeepTheirs,
+    /// Abort the sync operation.
+    Abort,
+}
+
+/// Resolution strategy for a symlink conflict with an existing file or directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymlinkConflictResolution {
+    /// Replace the existing file/directory with the symlink.
+    Replace,
+    /// Keep the existing file/directory (skip creating the symlink).
+    KeepExisting,
     /// Abort the sync operation.
     Abort,
 }
@@ -21,6 +33,14 @@ pub trait ConflictResolver {
     ///
     /// Returns an error if the user cancels or the prompt fails.
     fn resolve_tree_conflict(&self, prompt: &str) -> Result<TreeConflictResolution>;
+
+    /// Prompt for a symlink conflict decision when an existing file or directory
+    /// is at the symlink's path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the user cancels or the prompt fails.
+    fn resolve_symlink_conflict(&self, prompt: &str) -> Result<SymlinkConflictResolution>;
 
     /// Prompt for which entry kind to use when local and remote disagree.
     ///
@@ -49,6 +69,10 @@ pub struct PanickingResolver;
 impl ConflictResolver for PanickingResolver {
     fn resolve_tree_conflict(&self, _prompt: &str) -> Result<TreeConflictResolution> {
         panic!("PanickingResolver: unexpected tree conflict in test");
+    }
+
+    fn resolve_symlink_conflict(&self, _prompt: &str) -> Result<SymlinkConflictResolution> {
+        panic!("PanickingResolver: unexpected symlink conflict in test");
     }
 
     fn choose_entry_kind(

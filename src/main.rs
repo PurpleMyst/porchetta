@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
-use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
+use porchetta::engine::resolver::{
+    ConflictResolver, SymlinkConflictResolution, TreeConflictResolution,
+};
 use porchetta::store::PorchettaStore;
 use porchetta::ui;
 
@@ -24,6 +26,28 @@ impl ConflictResolver for InteractiveResolver {
             "Keep local (ours)" => Ok(TreeConflictResolution::KeepOurs),
             "Keep remote (theirs)" => Ok(TreeConflictResolution::KeepTheirs),
             "Abort sync" => Ok(TreeConflictResolution::Abort),
+            _ => anyhow::bail!("Invalid conflict resolution choice"),
+        }
+    }
+
+    fn resolve_symlink_conflict(&self, prompt: &str) -> anyhow::Result<SymlinkConflictResolution> {
+        let choice = inquire::Select::new(
+            prompt,
+            vec![
+                "Replace existing file/directory with symlink",
+                "Keep existing file/directory",
+                "Abort sync",
+            ],
+        )
+        .prompt()
+        .context("User canceled conflict resolution")?;
+
+        match choice {
+            "Replace existing file/directory with symlink" => {
+                Ok(SymlinkConflictResolution::Replace)
+            }
+            "Keep existing file/directory" => Ok(SymlinkConflictResolution::KeepExisting),
+            "Abort sync" => Ok(SymlinkConflictResolution::Abort),
             _ => anyhow::bail!("Invalid conflict resolution choice"),
         }
     }

@@ -28,12 +28,24 @@ struct RecordingTreeResolver {
     prompt: Arc<Mutex<Option<String>>>,
 }
 
+struct RecordingSymlinkResolver {
+    resolution: fn() -> porchetta::engine::resolver::SymlinkConflictResolution,
+    prompt: Arc<Mutex<Option<String>>>,
+}
+
 impl ConflictResolver for PassthroughBlobResolver {
     fn resolve_tree_conflict(
         &self,
         _prompt: &str,
     ) -> anyhow::Result<porchetta::engine::resolver::TreeConflictResolution> {
         Ok(porchetta::engine::resolver::TreeConflictResolution::KeepOurs)
+    }
+
+    fn resolve_symlink_conflict(
+        &self,
+        _prompt: &str,
+    ) -> anyhow::Result<porchetta::engine::resolver::SymlinkConflictResolution> {
+        Ok(porchetta::engine::resolver::SymlinkConflictResolution::KeepExisting)
     }
 
     fn choose_entry_kind(
@@ -65,6 +77,13 @@ impl ConflictResolver for RecordingTreeResolver {
         Ok((self.resolution)())
     }
 
+    fn resolve_symlink_conflict(
+        &self,
+        _prompt: &str,
+    ) -> anyhow::Result<porchetta::engine::resolver::SymlinkConflictResolution> {
+        panic!("tree-conflict test should not invoke symlink conflict resolution");
+    }
+
     fn choose_entry_kind(
         &self,
         ours: gix::objs::tree::EntryKind,
@@ -75,6 +94,35 @@ impl ConflictResolver for RecordingTreeResolver {
 
     fn edit_blob(&self, _content: &[u8], _path: &str) -> anyhow::Result<Vec<u8>> {
         panic!("tree-conflict test should not invoke blob editing");
+    }
+}
+
+impl ConflictResolver for RecordingSymlinkResolver {
+    fn resolve_tree_conflict(
+        &self,
+        _prompt: &str,
+    ) -> anyhow::Result<porchetta::engine::resolver::TreeConflictResolution> {
+        panic!("symlink-conflict test should not invoke tree conflict resolution");
+    }
+
+    fn resolve_symlink_conflict(
+        &self,
+        prompt: &str,
+    ) -> anyhow::Result<porchetta::engine::resolver::SymlinkConflictResolution> {
+        *self.prompt.lock().unwrap() = Some(prompt.to_string());
+        Ok((self.resolution)())
+    }
+
+    fn choose_entry_kind(
+        &self,
+        ours: gix::objs::tree::EntryKind,
+        _theirs: gix::objs::tree::EntryKind,
+    ) -> anyhow::Result<gix::objs::tree::EntryKind> {
+        Ok(ours)
+    }
+
+    fn edit_blob(&self, _content: &[u8], _path: &str) -> anyhow::Result<Vec<u8>> {
+        panic!("symlink-conflict test should not invoke blob editing");
     }
 }
 
@@ -617,4 +665,131 @@ fn test_both_deleted_blob_does_not_conflict() {
 
     assert!(!home.join(".config/test/subdir/file.txt").exists());
     assert!(!home.join(".config/test/subdir/other.txt").exists());
+}
+
+fn setup_symlink_conflict(
+    home: &camino::Utf8Path,
+    store_path: &camino::Utf8Path,
+) -> PorchettaStore {
+    let store = PorchettaStore::init_at(store_path).unwrap();
+    let manifest = br#"return {
+        topics = {
+            src = {
+                root = ".config/src",
+                paths = {"target.txt"},
+            },
+            link_topic = {
+                root = ".config/link",
+                paths = {"other.txt"},
+                symlinks = {
+                    ["conflict_link"] = porchetta.topic("src") / "target.txt",
+                },
+            },
+        },
+    }"#;
+    store.write_manifest(manifest).unwrap();
+
+    let src_dir = home.join(".config/src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("target.txt"), "target content\n").unwrap();
+
+    let link_dir = home.join(".config/link");
+    std::fs::create_dir_all(&link_dir).unwrap();
+    std::fs::write(link_dir.join("other.txt"), "other content\n").unwrap();
+    std::fs::write(link_dir.join("conflict_link"), "existing file content\n").unwrap();
+
+    store
+}
+
+#[test]
+fn test_symlink_conflict_keep_existing() {
+    let _guard = merge_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = setup_symlink_conflict(&home, &store_path);
+
+    let prompt = Arc::new(Mutex::new(None));
+    let resolver = RecordingSymlinkResolver {
+        resolution: || porchetta::engine::resolver::SymlinkConflictResolution::KeepExisting,
+        prompt: Arc::clone(&prompt),
+    };
+    store.sync_at(&home, false, true, &[], &resolver).unwrap();
+
+    let prompt = prompt.lock().unwrap().clone().unwrap();
+    assert!(prompt.contains("Path 'conflict_link' conflicts with existing file"));
+    assert_eq!(
+        std::fs::read_to_string(home.join(".config/link/conflict_link")).unwrap(),
+        "existing file content\n"
+    );
+    let meta = std::fs::symlink_metadata(home.join(".config/link/conflict_link")).unwrap();
+    assert!(!meta.file_type().is_symlink());
+}
+
+#[test]
+fn test_symlink_conflict_replace() {
+    let _guard = merge_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = setup_symlink_conflict(&home, &store_path);
+
+    let prompt = Arc::new(Mutex::new(None));
+    let resolver = RecordingSymlinkResolver {
+        resolution: || porchetta::engine::resolver::SymlinkConflictResolution::Replace,
+        prompt: Arc::clone(&prompt),
+    };
+    store.sync_at(&home, false, true, &[], &resolver).unwrap();
+
+    let prompt = prompt.lock().unwrap().clone().unwrap();
+    assert!(prompt.contains("Path 'conflict_link' conflicts with existing file"));
+    let link_path = home.join(".config/link/conflict_link");
+    let meta = std::fs::symlink_metadata(&link_path).unwrap();
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&link_path).unwrap(),
+        "target content\n"
+    );
+}
+
+#[test]
+fn test_symlink_conflict_abort() {
+    let _guard = merge_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = setup_symlink_conflict(&home, &store_path);
+
+    let prompt = Arc::new(Mutex::new(None));
+    let resolver = RecordingSymlinkResolver {
+        resolution: || porchetta::engine::resolver::SymlinkConflictResolution::Abort,
+        prompt: Arc::clone(&prompt),
+    };
+    let result = store.sync_at(&home, false, true, &[], &resolver);
+    assert!(result.is_err());
+    let prompt = prompt.lock().unwrap().clone().unwrap();
+    assert!(prompt.contains("Path 'conflict_link' conflicts with existing file"));
+    assert_eq!(
+        std::fs::read_to_string(home.join(".config/link/conflict_link")).unwrap(),
+        "existing file content\n"
+    );
+}
+
+#[test]
+fn test_symlink_conflict_dry_run_does_not_prompt() {
+    let _guard = merge_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let home = Utf8PathBuf::try_from(temp.path().to_path_buf()).unwrap();
+    let store_path = PorchettaStore::store_path_for(temp.path()).unwrap();
+    let store = setup_symlink_conflict(&home, &store_path);
+
+    // PanickingResolver panics if resolve_symlink_conflict is called
+    store
+        .sync_at(&home, true, true, &[], &PanickingResolver)
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".config/link/conflict_link")).unwrap(),
+        "existing file content\n"
+    );
 }

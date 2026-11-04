@@ -11,7 +11,7 @@ use camino::Utf8Path;
 use gix::merge::tree::TreatAsUnresolved;
 use log::{debug, info, trace};
 
-use self::resolver::ConflictResolver;
+use self::resolver::{ConflictResolver, SymlinkConflictResolution};
 use crate::manifest::{Manifest, Symlink, Topic};
 use crate::store::{Branch, PorchettaStore, Remote};
 use crate::ui;
@@ -401,6 +401,24 @@ impl PorchettaStore {
                         if current_str != symlink.target.as_str() {
                             symlink_changes.push(symlink.clone());
                         }
+                    } else if let Some(resolver) = resolver {
+                        let kind = if meta.is_dir() { "directory" } else { "file" };
+                        let prompt = format!(
+                            "Path '{}' conflicts with existing {kind}. Replace with symlink to '{}'?",
+                            symlink.link, symlink.target
+                        );
+                        match resolver.resolve_symlink_conflict(&prompt)? {
+                            SymlinkConflictResolution::Replace => {
+                                symlink_changes.push(symlink.clone());
+                            }
+                            SymlinkConflictResolution::KeepExisting => {}
+                            SymlinkConflictResolution::Abort => {
+                                bail!(
+                                    "Sync aborted by user while resolving symlink conflict at '{}'",
+                                    symlink.link
+                                );
+                            }
+                        }
                     } else {
                         Self::report_topic(
                             manifest,
@@ -447,9 +465,13 @@ impl PorchettaStore {
                 .with_context(|| format!("Failed to create parent directory '{parent}'"))?;
         }
 
-        if std::fs::symlink_metadata(link_path).is_ok() {
-            std::fs::remove_file(link_path)
-                .with_context(|| format!("Failed to remove old symlink '{link_path}'"))?;
+        if let Ok(meta) = std::fs::symlink_metadata(link_path) {
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                std::fs::remove_dir_all(link_path)
+            } else {
+                std::fs::remove_file(link_path)
+            }
+            .with_context(|| format!("Failed to remove existing '{link_path}'"))?;
         }
 
         std::os::unix::fs::symlink(target, link_path)
@@ -470,15 +492,15 @@ impl PorchettaStore {
                 .with_context(|| format!("Failed to create parent directory '{parent}'"))?;
         }
 
-        if std::fs::symlink_metadata(link_path).is_ok() {
-            if link_path.is_dir() {
-                std::fs::remove_dir(link_path).with_context(|| {
-                    format!("Failed to remove old symlink directory '{link_path}'")
-                })?;
-            } else {
+        if let Ok(meta) = std::fs::symlink_metadata(link_path) {
+            if !link_path.is_dir() {
                 std::fs::remove_file(link_path)
-                    .with_context(|| format!("Failed to remove old symlink file '{link_path}'"))?;
+            } else if meta.file_type().is_symlink() {
+                std::fs::remove_dir(link_path)
+            } else {
+                std::fs::remove_dir_all(link_path)
             }
+            .with_context(|| format!("Failed to remove existing '{link_path}'"))?;
         }
 
         // Porchetta creates relative symlinks. On Windows, CreateSymbolicLinkW requires

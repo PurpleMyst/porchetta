@@ -166,6 +166,30 @@ fn test_symlink_conflict_with_regular_file() {
 }
 
 #[test]
+fn test_symlink_conflict_dry_run_reports_conflict() {
+    let f = Fixture::new(MANIFEST);
+
+    std::fs::create_dir_all(f.home.join(".pi/agent")).unwrap();
+    std::fs::write(f.home.join(".pi/agent/AGENTS.md"), "pi agents\n").unwrap();
+    std::fs::create_dir_all(f.home.join(".gemini")).unwrap();
+    std::fs::write(f.home.join(".gemini/config.json"), "{}\n").unwrap();
+
+    std::fs::write(f.home.join(".gemini/GEMINI.md"), "real file conflict\n").unwrap();
+
+    let output = f.run(&["sync", "--dry-run", "--offline"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("conflict"));
+    assert!(stderr.contains("Path 'GEMINI.md' conflicts with existing file"));
+    assert!(stderr.contains("Preview incomplete · 1 conflict(s) need resolution"));
+    assert!(stderr.contains("Run `porchetta sync` to resolve interactively."));
+
+    assert_eq!(
+        std::fs::read_to_string(f.home.join(".gemini/GEMINI.md")).unwrap(),
+        "real file conflict\n"
+    );
+}
+
+#[test]
 fn test_symlink_update_when_target_changes() {
     let f = Fixture::new(MANIFEST);
 

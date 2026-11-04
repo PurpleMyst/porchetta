@@ -277,6 +277,7 @@ If a topic diverges on both sides, Porchetta prompts for resolution:
 
 - **Blob conflicts** (same file modified) — opens the merged file in your `$EDITOR` for hand editing.
 - **Tree conflicts** (add/delete/rename) — prompts to keep local, keep remote, or abort.
+- **Symlink conflicts** (symlink path matches existing file or directory) — prompts to replace with symlink, keep existing, or abort.
 
 ## Storage Layout
 

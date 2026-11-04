@@ -7,7 +7,9 @@ use std::sync::{
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
-use porchetta::engine::resolver::{ConflictResolver, TreeConflictResolution};
+use porchetta::engine::resolver::{
+    ConflictResolver, SymlinkConflictResolution, TreeConflictResolution,
+};
 use porchetta::store::{Branch, PorchettaStore};
 
 // Git subprocesses can briefly inherit lock descriptors from other test threads before exec.
@@ -123,6 +125,10 @@ impl ReplacingResolver {
 impl ConflictResolver for ReplacingResolver {
     fn resolve_tree_conflict(&self, _prompt: &str) -> Result<TreeConflictResolution> {
         Ok(TreeConflictResolution::KeepOurs)
+    }
+
+    fn resolve_symlink_conflict(&self, _prompt: &str) -> Result<SymlinkConflictResolution> {
+        Ok(SymlinkConflictResolution::KeepExisting)
     }
 
     fn choose_entry_kind(
