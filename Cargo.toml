@@ -1,6 +1,6 @@
 [package]
 name = "porchetta"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Bidirectional dotfile manager backed by a bare Git store and three-way merge"
 repository = "https://github.com/PurpleMyst/porchetta"
