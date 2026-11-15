@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="296" viewBox="0 0 760 296" role="img" aria-label="Animated pipeline showing a local ~/.bashrc edit and a remote topic/shell commit merging through porchetta sync into both the machine and store">
+  <style>
+    .card { fill: #ffffff; stroke: #d0d7de; }
+    .box { fill: #f6f8fa; stroke: #d0d7de; }
+    .text { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .accent { fill: #EA580C; }
+    .accent-pill { fill: #ffedd5; stroke: #EA580C; }
+    .accent-bar { fill: #EA580C; }
+    .ok { fill: #1a7f37; }
+    .wire { stroke: #EA580C; fill: none; stroke-width: 2; stroke-dasharray: 5 6; animation: flow 1.2s linear infinite; }
+    @media (prefers-color-scheme: dark) {
+      .card { fill: #0d1117; stroke: #30363d; }
+      .box { fill: #161b22; stroke: #30363d; }
+      .text { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .accent { fill: #fb923c; }
+      .accent-pill { fill: #431407; stroke: #fb923c; }
+      .accent-bar { fill: #fb923c; }
+      .ok { fill: #3fb950; }
+      .wire { stroke: #fb923c; }
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+    .label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; }
+    .title { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-weight: 700; }
+    .pulse { animation: pulse 7s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+    .reveal { animation: reveal 7s ease-out infinite both; }
+    .l1 { animation-delay: 0.1s; }
+    .l2 { animation-delay: 0.35s; }
+    .l3 { animation-delay: 0.65s; }
+    @keyframes flow { to { stroke-dashoffset: -22; } }
+    @keyframes pulse { 0%, 15% { transform: scale(1); } 22% { transform: scale(1.06); } 30%, 100% { transform: scale(1); } }
+    @keyframes reveal { 0%, 18% { opacity: 0; transform: translateY(5px); } 28%, 88% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; } }
+  </style>
+
+  <rect class="card" x="0.5" y="0.5" width="759" height="295" rx="14"/>
+
+  <!-- Left top: Local edit -->
+  <text class="label muted" x="28" y="34">LOCAL MACHINE</text>
+  <text class="muted" x="150" y="34">~/.bashrc</text>
+  <rect class="box" x="24" y="44" width="246" height="84" rx="10"/>
+  <text class="muted" x="40" y="72">  # shared shell config</text>
+  <text class="accent" x="40" y="96">+ alias gs="git status"</text>
+  <text class="muted" x="40" y="116">  (edited in place)</text>
+
+  <!-- Left bottom: Remote store commit -->
+  <text class="label muted" x="28" y="164">REMOTE STORE</text>
+  <text class="muted" x="150" y="164">topic/shell</text>
+  <rect class="box" x="24" y="174" width="246" height="84" rx="10"/>
+  <text class="muted" x="40" y="202">  # shared shell config</text>
+  <text class="accent" x="40" y="226">+ export EDITOR=nvim</text>
+  <text class="muted" x="40" y="246">  (pushed from desktop)</text>
+
+  <!-- Wires into merge node -->
+  <path class="wire" d="M 270 86 C 304 86, 304 148, 336 148"/>
+  <path class="wire" d="M 270 216 C 304 216, 304 148, 336 148"/>
+
+  <!-- Center step: porchetta sync -->
+  <g class="pulse">
+    <rect class="accent-pill" x="336" y="118" width="136" height="60" rx="12" stroke-width="1.5"/>
+    <text class="title accent" x="352" y="144">porchetta sync</text>
+    <text class="muted" x="356" y="164">3-way merge</text>
+  </g>
+
+  <!-- Wire to merged output -->
+  <path class="wire" d="M 472 148 L 510 148"/>
+
+  <!-- Right: Merged result -->
+  <text class="label muted" x="514" y="54">MERGED &amp; SYNCED</text>
+  <rect class="box" x="510" y="64" width="226" height="176" rx="10"/>
+  <text class="muted" x="526" y="92"># shared shell config</text>
+
+  <g class="reveal l1">
+    <rect class="accent-bar" x="520" y="106" width="3" height="20" rx="1.5"/>
+    <text class="text" x="530" y="121">alias gs="git status"</text>
+  </g>
+
+  <g class="reveal l2">
+    <rect class="accent-bar" x="520" y="134" width="3" height="20" rx="1.5"/>
+    <text class="text" x="530" y="149">export EDITOR=nvim</text>
+  </g>
+
+  <g class="reveal l3">
+    <line class="box" x1="524" y1="172" x2="722" y2="172" stroke-width="1"/>
+    <text class="ok" x="526" y="196">✓ Local applied</text>
+    <text class="ok" x="526" y="218">✓ Remote published</text>
+  </g>
+</svg>

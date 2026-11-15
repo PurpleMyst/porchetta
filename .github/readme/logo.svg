@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Porchetta angled harness pig parcel logo: vertical and diagonal torso straps wrapping the body edge-to-edge with an open-loop bow and tag">
+  <style>
+    .pig { fill: #EA580C; }
+    .pig-stroke { stroke: #EA580C; }
+    .twine { stroke: #1f2328; }
+    .twine-fill { fill: #1f2328; }
+    .tag-bg { fill: #ffffff; stroke: #1f2328; }
+    @media (prefers-color-scheme: dark) {
+      .pig { fill: #fb923c; }
+      .pig-stroke { stroke: #fb923c; }
+      .twine { stroke: #e6edf3; }
+      .twine-fill { fill: #e6edf3; }
+      .tag-bg { fill: #0d1117; stroke: #e6edf3; }
+    }
+  </style>
+  <defs>
+    <mask id="p2c-x3-mask">
+      <rect width="128" height="128" fill="white"/>
+      <line x1="56" y1="40" x2="56" y2="88" stroke="black" stroke-width="8.5"/>
+      <line x1="28" y1="49" x2="77" y2="87" stroke="black" stroke-width="8.5"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#p2c-x3-mask)">
+    <polyline class="pig-stroke" points="25,58 17,54 17,45 25,43 27,48" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path class="pig" fill-rule="evenodd" d="M 26 56 L 38 44 L 74 44 L 82 28 L 91 38 L 92 46 L 109 50 L 109 64 L 94 79 L 88 83 L 88 99 L 79 99 L 78 85 L 45 85 L 42 99 L 33 99 L 33 83 L 26 75 Z M 89 48 A 3.4 3.4 0 1 0 89 54.8 A 3.4 3.4 0 1 0 89 48 Z"/>
+  </g>
+
+  <!-- Vertical girth strap + shoulder-to-belly diagonal strap -->
+  <line class="twine" x1="56" y1="42" x2="56" y2="86" stroke-width="4.4" stroke-linecap="round"/>
+  <line class="twine" x1="31" y1="51" x2="74" y2="85" stroke-width="4.4" stroke-linecap="round"/>
+
+  <!-- Open-loop parcel bow on back -->
+  <path class="twine" d="M 55 39 C 44 22, 35 36, 52 39" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+  <path class="twine" d="M 57 39 C 68 22, 77 36, 60 39" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+  <circle class="twine-fill" cx="56" cy="39.5" r="3"/>
+
+  <!-- Dangling shipping tag at strap intersection -->
+  <g transform="translate(56, 70.5) rotate(12)">
+    <polygon class="tag-bg" points="-6,5 6,5 7,10 7,24 -7,24 -7,10" stroke-width="2.8" stroke-linejoin="round"/>
+    <circle class="twine-fill" cx="0" cy="10" r="1.6"/>
+    <line class="twine" x1="-3.5" y1="15.5" x2="3.5" y2="15.5" stroke-width="2" stroke-linecap="round"/>
+    <line class="twine" x1="-3.5" y1="19.5" x2="2" y2="19.5" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <circle class="twine-fill" cx="56" cy="70.5" r="3.2"/>
+</svg>
