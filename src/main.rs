@@ -103,7 +103,8 @@ impl ConflictResolver for InteractiveResolver {
 #[command(
     name = "porchetta",
     version,
-    about = "Dotfile manager with topics and conflict resolution"
+    about = "Bidirectional dotfile manager with topics and conflict resolution",
+    after_help = "Discovery:\n  porchetta store path                  Print the bare Git store path (~/.porchetta).\n  porchetta remote list                 Check publication targets (none means local-only).\n  porchetta manifest inspect --topic NAME --json\n                                       Inspect one topic's evaluated configuration.\n  porchetta sync --dry-run --offline --topic NAME\n                                       Preview capture and apply changes for one topic.\n\nFor revision-checked, non-interactive manifest editing, see `porchetta manifest --help`."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -122,6 +123,11 @@ struct Cli {
 enum Command {
     /// Initialize a new Porchetta store
     Init,
+    /// Inspect the local store
+    Store {
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
     /// Manage the manifest
     #[command(
         after_help = "Examples:\n  porchetta manifest edit\n  porchetta manifest view > manifest.lua\n  porchetta manifest validate --file manifest.lua\n  porchetta manifest set --file manifest.lua\n\nAgent workflow:\n  Read source and revision with `manifest view --json`.\n  Edit the Lua source, then validate it with `manifest validate --file manifest.lua --json`.\n  Save with `manifest set --file manifest.lua --if-revision <SHA256> --json`.\n  On revision_mismatch, reread and reconcile changes before retrying.\n\nThese commands do not sync managed files or remotes.\nJSON results go to stdout; logs and error reporting go to stderr.\nExit status: 0 success, 1 operation/validation failure, 2 CLI usage error.\nUsage errors are not JSON. Use `<command> --help` for details."
@@ -130,12 +136,15 @@ enum Command {
         #[command(subcommand)]
         command: ManifestCommand,
     },
-    /// Apply the manifest to the local machine
+    /// Capture local changes, apply merged files, and publish to remotes
+    #[command(
+        after_help = "Examples:\n  porchetta sync --dry-run --offline --topic shell\n  porchetta sync --topic shell\n\nSync is bidirectional: local edits are captured into the store and merged\nchanges are applied to this machine. Without --offline, a normal sync fetches\nfrom and publishes to every configured remote. With no remotes, sync is local-only;\nuse `porchetta remote list` to check publication targets.\n\n--dry-run previews capture and apply without updating managed files or canonical\nstore refs, and never publishes. Online previews still fetch remotes; add\n--offline to skip Porchetta's remote fetches. Lua and content/filter hooks still\nrun during previews and are not sandboxed."
+    )]
     Sync {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
-        /// Do not fetch or push from the remote
+        /// Do not fetch from or push to any remote
         #[arg(long)]
         offline: bool,
         /// Limit synchronization to the named topics (repeatable)
@@ -157,6 +166,12 @@ enum Command {
         #[command(subcommand)]
         command: MigrateCommand,
     },
+}
+
+#[derive(Subcommand, Clone)]
+enum StoreCommand {
+    /// Print the absolute store path without opening or initializing it
+    Path,
 }
 
 #[derive(Subcommand, Clone)]
@@ -220,9 +235,12 @@ pub(crate) enum ManifestCommand {
     },
     /// Inspect the configuration evaluated on this machine
     #[command(
-        after_help = "Examples:\n  porchetta manifest inspect\n  porchetta manifest inspect --json\n\nEvaluates the stored Lua on this machine. Returns `revision`, sorted `topics`\n(name, enabled, normalized root, paths, hook presence), and manifest-level\nhook presence. Disabled topics are included. Hooks are not executed.\nLua is not sandboxed. This is configuration inspection, not a filesystem preview.\n\nDefault output is pretty-printed JSON; --json emits compact JSON and structured\nerrors. Evaluated output cannot round-trip expressions, comments, or functions.\nUse `manifest view` to obtain editable Lua source.\nExit status: 0 success, 1 failure, 2 usage error (not JSON)."
+        after_help = "Examples:\n  porchetta manifest inspect\n  porchetta manifest inspect --topic shell --json\n\nEvaluates the stored Lua on this machine. Returns `revision`, sorted `topics`\n(name, enabled, normalized root, paths, hook presence), and manifest-level\nhook presence. Disabled topics are included. Hooks are not executed.\nLua is not sandboxed. This is configuration inspection, not a filesystem preview.\nFor actual capture/apply changes after filtering and transforms, use:\n  porchetta sync --dry-run --offline --topic NAME\nA clean preview shows no capture/apply changes for the selected topics in the\nstate examined; it does not prove that a file is managed.\n\nDefault output is pretty-printed JSON; --json emits compact JSON and structured\nerrors. Evaluated output cannot round-trip expressions, comments, or functions.\nUse `manifest view` to obtain editable Lua source.\nExit status: 0 success, 1 failure, 2 usage error (not JSON)."
     )]
     Inspect {
+        /// Limit output to the named topics, including disabled topics (repeatable)
+        #[arg(short = 't', long = "topic", value_name = "NAME")]
+        topics: Vec<String>,
         /// Emit compact JSON results and structured errors
         #[arg(long)]
         json: bool,
@@ -307,7 +325,13 @@ fn handle_remote(command: RemoteCommand) -> Result<()> {
             ui::success(&format!("Added remote '{name}'"));
         }
         RemoteCommand::List => {
-            for remote in store.remotes().context("Failed to list remotes")? {
+            let remotes = store.remotes().context("Failed to list remotes")?;
+            if remotes.is_empty() {
+                ui::info(
+                    "No remotes configured; sync is local-only. Add one with `porchetta remote add <name> <url>`.",
+                );
+            }
+            for remote in remotes {
                 println!("{}: {}", remote.name(), remote.url());
             }
         }
@@ -328,6 +352,9 @@ fn main() -> Result<()> {
     init_logging()?;
 
     match cli.command {
+        Command::Store {
+            command: StoreCommand::Path,
+        } => println!("{}", PorchettaStore::store_path()?),
         Command::Init => {
             let _store = PorchettaStore::init().context("Failed to initialize store")?;
             ui::success("Initialized Porchetta store");

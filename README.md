@@ -1,290 +1,138 @@
 # Porchetta
 
+Edit your dotfiles where you use them, then run `porchetta sync` to save your edits
+and bring in changes from your other machines. Porchetta stores configs in Git,
+merges changes, and asks you to resolve conflicts when needed.
+
 ![Porchetta sync in Ayu Dark](docs/screenshot.png)
 
-Porchetta is a dotfile manager that synchronizes configuration *topics* between your local machine and a Git store using three-way merge. It treats your dotfiles as first-class content that can change on either side, resolving conflicts interactively when they occur.
+## Install
 
-## The Idea
+With [Rust](https://rustup.rs/) and Git installed:
 
-Most dotfile managers are one-directional: they copy files from a repository to your home directory. If you edit a file locally, you must remember to commit the change manually.
-
-Porchetta is bidirectional. Each *topic* (e.g., `shell`, `git`, `nvim`) is tracked independently. When you sync:
-
-1. **Capture** — reads the current state of your local files.
-2. **Merge** — three-way merges local changes with the stored topic branch, using your machine's last-applied state as the base.
-3. **Apply** — writes merged changes back to your filesystem and commits the result.
-
-This means you can edit a config file on one machine, sync to capture it, then sync on another machine to apply the change — with automatic conflict resolution when both sides diverge.
-
-## Installation
-
-Install via cargo from the Git repository:
-
-```bash
+```sh
 cargo install --locked --git https://github.com/PurpleMyst/porchetta.git
 ```
 
-Or clone and install locally:
+## Start with your existing configs
 
-```bash
-git clone https://github.com/PurpleMyst/porchetta.git
-cd porchetta
-cargo install --locked --path .
-```
+On the machine whose configs you want to keep, set `EDITOR` to your editor command
+if it isn't already configured (`export EDITOR=nvim` in Bash, or
+`$env:EDITOR = 'notepad.exe'` in PowerShell). Then create a store and open its manifest:
 
-Either way, `--locked` ensures you get the exact dependency versions that were used for testing.
-Porchetta stores its bare Git repository at `~/.porchetta`.
-
-Porchetta permits one active process for each local store. A second process stops before it accesses the store. Direct Git or filesystem changes during a Porchetta operation are not supported.
-
-## Quick Start
-
-```bash
+```sh
 porchetta init
-porchetta manifest edit   # edit manifest.lua
-porchetta sync
+porchetta manifest edit
 ```
 
-## Manifest
-
-The manifest is a Lua file that declares topics. Each topic groups related paths under a name, with optional hooks to transform content on the way into or out of the store.
+The manifest tells Porchetta which files to manage. Replace its contents with the
+example below, keeping the entries for tools you use.
 
 ```lua
-local windows = package.config:sub(1, 1) == "\\"
-local home = windows and os.getenv("USERPROFILE"):gsub("\\", "/") or os.getenv("HOME")
-local nvim_root = windows and (os.getenv("LOCALAPPDATA") .. "/nvim") or (home .. "/.config/nvim")
-
 return {
     topics = {
-        git = {
-            paths = { ".gitconfig" },
-            to_system = function(_, content)
-                return content:gsub("__HOME__", home)
-            end,
-            to_repo = function(_, content)
-                -- scrub home paths in both slash directions
-                return content:gsub(home, "__HOME__")
-                         :gsub(home:gsub("/", "\\"), "__HOME__")
-            end,
-        },
+        git = { paths = { ".gitconfig" } },
+        shell = { paths = { ".bashrc" } },
         nvim = {
-            root = nvim_root,  -- platform-dependent root
-            paths = { "init.lua", "lua", "snippets" },
-        },
-        pi_agent = {
-            root = ".pi/agent",
-            paths = { "settings.json", "AGENTS.md" },
-            to_repo = function(path, content)
-                if path:match(".json") then
-                    -- strip high-churn machine-specific keys and normalize JSON
-                    local settings = porchetta.json.decode(content)
-                    settings.defaultProvider = nil
-                    settings.defaultModel = nil
-                    content = porchetta.json.encode_pretty(settings)
-                end
-                return content:gsub(home, "__HOME__")
-            end,
-            to_system = function(_, content)
-                return content:gsub("__HOME__", home)
-            end,
-        },
-        pi_agent_skills = {
-            root = ".pi/agent/skills",
-            paths = { "." },  -- sync the whole directory
-        },
-        agy = {
-            root = ".gemini",
-            paths = { "config.json" },
-            symlinks = {
-                ["GEMINI.md"] = porchetta.topic("pi_agent") / "AGENTS.md",
-                ["skills"] = porchetta.topics.pi_agent_skills,
-            },
+            root = ".config/nvim",
+            paths = { "init.lua", "lua" },
         },
     },
-    should_include = function(path)
-        return not path:match("node_modules") and not path:match("dist")
-    end,
 }
 ```
 
-- `root` — base directory for the topic's paths. Can be a computed value (e.g. platform-dependent).
-- `paths` — files or directories to sync, relative to `root` (or home if `root` is omitted). Use `"."` to capture an entire directory.
-- `symlinks` — mapping of link paths (relative to `root`) to targets. Targets can be a literal relative path string or a topic reference like `porchetta.topic("name") / "subpath"`. Relative paths across topic roots are computed automatically.
-- `to_repo(path, content) -> string` — called before storing topic content in the repo. Use this to scrub local paths, strip secrets, or normalize content.
-- `to_system(path, content) -> string` — called before writing topic content to the filesystem. Use this to restore placeholders like `__HOME__`.
-- `should_include(path) -> boolean` — filters files or directories while scanning. Can be set on a topic or at the top level; both must return `true` for a path to be included.
+Each named group is a **topic**. Paths start at your home directory; `root` gives
+a topic a different base directory. This example covers Git, Bash and Neovim.
+For Neovim on Windows or a mixed-platform setup, use the
+[platform-dependent manifest example](docs/reference.md#platform-dependent-paths).
+Adjust the entries to match files you already have, then save and close the editor.
 
-**NB**: All non-binary content (containing no NUL byte) has CR-LF line endings normalized to LF
-both before and after the `to_repo` hook, and before the `to_system` hook. In the future this might
-be more configurable.
+Preview the files to capture, then save them to the local store:
 
-Manifest Lua code has access to a small `porchetta` runtime:
-
-- `porchetta.topic(name)` / `porchetta.topics.<name>` creates a symbolic reference to another topic that supports `/` path arithmetic (e.g. `porchetta.topic("pi_agent") / "AGENTS.md"`).
-- `porchetta.json.decode(content)` parses JSON into Lua tables and values. Decoded JSON arrays and objects keep their shape when encoded again, including empty arrays (`[]`) and empty objects (`{}`).
-- `porchetta.json.encode(value)` serializes a Lua value as compact JSON.
-- `porchetta.json.encode_pretty(value)` serializes a Lua value as pretty-printed JSON.
-- `porchetta.json.null` represents JSON `null`; a missing key is still Lua `nil`.
-- Lua-created empty tables encode as JSON objects (`{}`). If you need an empty array, decode one from JSON first and mutate it.
-- `porchetta.system(args[, stdin])` runs an external command and returns stdout. Use it for non-JSON formatters, generators, or other tools.
-
-### LuaLS support
-
-`porchetta manifest edit` opens the manifest in a temporary LuaLS workspace containing `.luarc.json` and Porchetta's runtime definitions. Neovim users with LuaLS already installed/configured should get `porchetta` completions, hover/signature info, and no `undefined-global` diagnostic without Porchetta-specific editor setup.
-
-For other editors, or for manifests edited outside `porchetta manifest edit`, use the same official stub at `src/luals/porchetta.lua` and add it to your LuaLS workspace library. A minimal `.luarc.json` looks like:
-
-```json
-{
-  "runtime": { "version": "Lua 5.4" },
-  "workspace": {
-    "library": ["/path/to/porchetta/src/luals"],
-    "checkThirdParty": false
-  }
-}
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `porchetta init` | Create a new store at `~/.porchetta`. |
-| `porchetta manifest edit` | Open `manifest.lua` in `$EDITOR`. |
-| `porchetta manifest view` | Print the current manifest to stdout. |
-| `porchetta manifest view --json` | Return Lua source and its SHA-256 revision. |
-| `porchetta manifest set --file PATH` | Validate and save Lua without an editor (or use `--stdin`). |
-| `porchetta manifest validate --file PATH` | Evaluate and validate without saving (or use `--stdin`). |
-| `porchetta manifest inspect --json` | Return evaluated topics and hook presence on this machine. |
-
-### Agent manifest workflow
-
-Read `manifest view --json` to obtain `source` and `revision`. Edit the source,
-then run `manifest validate --file manifest.lua --json` and
-`manifest set --file manifest.lua --if-revision REVISION --json`.
-The revision is the lowercase SHA-256 of the exact source bytes. Comparison and
-write happen under the store's exclusive lock. A stale revision rejects the
-write; reread and reconcile changes before retrying. Omitting `--if-revision`
-allows an unconditional replacement. These commands do not sync files or remotes.
-
-Validation evaluates Lua using the normal runtime and home-root normalization;
-it is not a sandbox and does not execute hooks to verify their behavior.
-Inspection shows evaluated values, not round-trippable source: expressions,
-comments and function bodies remain available through `view` only.
-
-`set`, `validate`, and `inspect` support `--json`. JSON goes to stdout; logging
-and error reporting go to stderr. Successful validation returns
-`{"valid":true,"errors":[]}`; unsuccessful validation returns `valid: false`
-with an `errors` array. Diagnostics have stable `code` and human-readable
-`message` fields, and validation diagnostics include nullable `topic`, `field`,
-and `value`. Codes are `lua_syntax_error`, `lua_runtime_error`, `invalid_field`,
-`invalid_path`, `revision_mismatch`, and `operation_failed`. Successful JSON writes
-return the new `revision`. Inspection returns `revision`, sorted `topics`
-(name, enabled, root, paths, hooks), and manifest-level `hooks`.
-Exit status is 0 on success, 1 on operation/validation failure, and 2 for CLI
-usage errors. Usage errors are reported by the CLI parser, not as JSON.
-| `porchetta sync` | Synchronize all topics and publish them to every configured remote. |
-| `porchetta sync --topic <NAME>` | Limit capture, apply, and publication to the named topics. Repeat the flag for more than one topic. |
-| `porchetta sync --dry-run` | Preview what would change without applying. |
-| `porchetta sync --offline` | Synchronize locally without fetching from or pushing to any remote. |
-| `porchetta clone <url>` | Clone a remote store. Run `sync` next. |
-| `porchetta remote add <name> <url>` | Add a named remote. |
-| `porchetta remote list` | List configured remotes. |
-| `porchetta remote remove <name>` | Remove a named remote. |
-| `porchetta migrate chezmoi` | Import topics from a chezmoi source directory. Use `--source-dir <dir>` to override the default and `--yes` to skip the overwrite prompt. |
-
-## Workflow Examples
-
-### Set up a new machine
-
-```bash
-porchetta clone git@github.com:you/dotfiles.git
-porchetta sync
-```
-
-### Edit and propagate
-
-```bash
-# Edit ~/.bashrc locally, then capture it to the store
-
-# On another machine, apply the change
-porchetta sync
-```
-
-### Preview or work offline
-
-```bash
+```sh
 porchetta sync --dry-run
+porchetta sync
+```
+
+The report shows which files were captured into the store and which were applied
+to your machine. Your store is at `~/.porchetta`.
+
+## Share configs with another machine
+
+Create an empty Git repository on your Git host, then replace the example URL
+with its SSH or HTTPS URL:
+
+```sh
+porchetta remote add origin git@github.com:you/dotfiles.git
+porchetta sync
+```
+
+That sync publishes your manifest and topics. Keep passwords and tokens out of
+managed files, and use a private repository for personal configuration.
+
+On the **second machine**, install Porchetta, set `EDITOR`, and clone the store:
+
+```sh
+porchetta clone git@github.com:you/dotfiles.git
+porchetta sync --dry-run
+porchetta sync
+```
+
+Start with `clone` rather than `init` on this machine. The preview shows what will
+be applied and any local differences to merge. A normal sync walks you through
+conflicts before applying the merged files.
+
+## Day-to-day use
+
+Edit your config files as usual. On the machine with your edits:
+
+```sh
+porchetta sync
+```
+
+Run the same command on your other machines to receive those changes. Each sync
+also captures local edits and publishes the merged result to your configured remotes.
+
+To work on just one topic, use its name from the manifest:
+
+```sh
+porchetta sync --dry-run --topic shell
+porchetta sync --topic shell
+```
+
+Repeat `--topic` to select several topics. To save local changes while offline:
+
+```sh
 porchetta sync --offline
 ```
 
-### Migrate from chezmoi
+Run `porchetta sync` when you're back online to publish them.
 
-```bash
-porchetta init
-porchetta migrate chezmoi --source-dir ~/.local/share/chezmoi
-porchetta sync
-```
+## Resolve conflicts and retry failures
 
-## Remotes
+When both sides changed a file, Porchetta merges the edits. If they conflict,
+`porchetta sync` opens the merged file in your editor. Resolve the conflict markers,
+save, and close the editor to continue. For file/directory or symlink conflicts,
+follow the prompt to choose what to keep. If you stop a sync to adjust files,
+run `porchetta sync` again when you're ready.
 
-> **Note:** Remotes are symmetric: there is no special `origin`. Add each publication target explicitly, for example:
+- **Fetch failed:** restore access to the remote and retry. Use `sync --offline`
+  to keep working locally.
+- **Publication failed after local sync:** your local changes are saved. Fix the
+  remote connection or permissions, then run `porchetta sync` again to publish.
 
-```bash
-porchetta remote add github git@github.com:you/dotfiles.git
-porchetta remote add backup ssh://backup.example/you/dotfiles.git
-porchetta remote list
-```
+## Find your next action
 
-Remove a remote with `porchetta remote remove <name>`. A normal sync fetches every configured remote. If any fetch fails, sync aborts before it captures, merges, or applies local filesystem changes.
+| Task | Command or guide |
+|------|------------------|
+| Change which files are managed | `porchetta manifest edit` |
+| Check a topic's configured paths | `porchetta manifest inspect --topic shell` |
+| Find the local store | `porchetta store path` |
+| Check publication targets | `porchetta remote list` |
+| Import a chezmoi setup | [Migration guide](docs/reference.md#migrate-from-chezmoi) |
+| Add filters, transforms or symlinks | [Manifest reference](docs/reference.md#manifest) |
+| Understand merges, previews and storage | [Sync reference](docs/reference.md#synchronization) |
 
-After local synchronization succeeds, Porchetta attempts to push to every configured remote. Pushes are best-effort: a failure publishing to one remote does not prevent attempts to publish to the others. If any push fails, sync reports a publication error after all pushes have been attempted; local filesystem changes and local store commits remain complete and can be published by a later sync.
-
-## How Sync Works
-
-Before synchronizing the filesystem, Porchetta reconciles remote history. After fetching all remotes, it reconciles the fetched commits with the local topic and manifest histories. This commit reconciliation is separate from the filesystem merge below.
-
-For each topic, Porchetta then builds three trees using an explicit base:
-
-- **Base** — the last state applied to this hostname (`system/<hostname>/<topic>`).
-- **Ours** — the current state of the topic's paths on the local filesystem.
-- **Theirs** — the reconciled stored state of the topic (`topic/<topic>`).
-
-It performs a three-way merge of these trees. The result is:
-
-- **Captured** to the topic branch if it differs from `theirs`.
-- **Applied** to the filesystem if it differs from `ours`.
-- **Recorded** as the new base for this hostname.
-
-With `sync --offline`, Porchetta skips fetching, remote-history reconciliation, and publishing, but still performs this local filesystem synchronization using the local store state.
-
-### Topic filter
-
-`sync --topic <NAME>` (or `-t`) limits local synchronization to the named topics; repeat the flag for more than one. Topics that are not named are not captured, applied, or reconciled against fetched remote histories. An unknown name fails before any topic is synchronized and the error lists the manifest's topics.
-
-Publication follows the filter: a successful filtered sync pushes the manifest and the selected topic branches, leaving unselected branches untouched on every remote.
-
-### Dry-run guarantees
-
-`sync --dry-run` does not move Porchetta's canonical `manifest` or `topic/*` refs, update local `system/*` refs, modify managed filesystem contents, publish remote refs, or change repository configuration. An online dry run still fetches remotes, so remote-tracking refs may be refreshed.
-
-Dry-run modeling may write unreachable Git blobs, trees, and commits while snapshotting files or reconciling divergent histories. These objects do not affect observable synchronized state and can be reclaimed by normal Git garbage collection.
-
-A topic whose histories conflict during reconciliation is reported as a conflict, just like a filesystem merge conflict, and the dry run continues with the remaining topics. A conflicting manifest history still requires an interactive `porchetta sync`, because the manifest defines the topic set.
-
-### Conflict Resolution
-
-If a topic diverges on both sides, Porchetta prompts for resolution:
-
-- **Blob conflicts** (same file modified) — opens the merged file in your `$EDITOR` for hand editing.
-- **Tree conflicts** (add/delete/rename) — prompts to keep local, keep remote, or abort.
-- **Symlink conflicts** (symlink path matches existing file or directory) — prompts to replace with symlink, keep existing, or abort.
-
-## Storage Layout
-
-The store at `~/.porchetta` is a bare Git repository with these branches:
-
-- `manifest` — the `manifest.lua` file.
-- `topic/<name>` — the latest committed state of each topic.
-- `system/<hostname>/<name>` — the last state applied to each machine. These local bookkeeping branches are never transferred to remotes.
-
-Because topics live on independent branches, you can sync them individually and never deal with merge conflicts across unrelated configs.
+Use `porchetta --help` for commands and `porchetta <command> --help` for options
+and examples. For scripted manifest changes and revision checks, see
+`porchetta manifest --help`.

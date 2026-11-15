@@ -53,8 +53,13 @@ pub fn header(text: &str) {
 pub fn sync_header(hostname: &str, dry_run: bool, offline: bool, remotes: usize) {
     header(&format!("Porchetta · {hostname}"));
     let mode = if offline { "offline" } else { "online" };
+    let remote_status = if offline {
+        "remotes skipped".to_owned()
+    } else {
+        format!("{remotes} remotes")
+    };
     info(&format!(
-        "{} · {mode} · {remotes} remotes",
+        "{} · {mode} · {remote_status}",
         if dry_run { "Preview" } else { "Sync" }
     ));
     if dry_run {

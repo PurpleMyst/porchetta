@@ -74,7 +74,7 @@ pub(crate) fn run(command: ManifestCommand) -> Result<()> {
         ManifestCommand::View { json }
         | ManifestCommand::Set { json, .. }
         | ManifestCommand::Validate { json, .. }
-        | ManifestCommand::Inspect { json } => *json,
+        | ManifestCommand::Inspect { json, .. } => *json,
         ManifestCommand::Edit => unreachable!(),
     };
     let validating = matches!(command, ManifestCommand::Validate { .. });
@@ -160,12 +160,29 @@ fn execute(command: ManifestCommand) -> Result<()> {
                 ui::success("Manifest updated");
             }
         }
-        ManifestCommand::Inspect { json: json_output } => {
+        ManifestCommand::Inspect {
+            json: json_output,
+            topics: selected,
+        } => {
             let source = PorchettaStore::load()?.read_manifest()?;
             let manifest = load(&source)?;
+            for name in &selected {
+                if !manifest.topics.iter().any(|topic| topic.name == *name) {
+                    bail!(
+                        "Unknown topic '{name}'. Manifest defines: {}",
+                        manifest
+                            .topics
+                            .iter()
+                            .map(|topic| topic.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
             let topics: Vec<Value> = manifest
                 .topics
                 .iter()
+                .filter(|topic| selected.is_empty() || selected.contains(&topic.name))
                 .map(|topic| {
                     json!({
                         "name": topic.name,

@@ -123,6 +123,58 @@ fn manifest_write_roundtrip_and_stale_revision_protection() {
     );
 }
 
+#[test]
+fn inspect_filters_topics_without_executing_hooks() {
+    let f = Fixture::new();
+    let source = "return { should_include = function() error('must not run') end, topics = { alpha = { paths = {'a'} }, beta = { enabled = false, paths = {'b'}, to_repo = function() error('must not run') end }, gamma = { paths = {'c'} } } }";
+    assert!(
+        f.run(&["manifest", "set", "--stdin"], Some(source))
+            .status
+            .success()
+    );
+    let filtered = f.run(
+        &[
+            "manifest", "inspect", "--json", "-t", "beta", "--topic", "alpha", "-t", "beta",
+        ],
+        None,
+    );
+    assert!(filtered.status.success());
+    assert_eq!(filtered.stderr.as_slice(), b"");
+    let filtered: Value = serde_json::from_slice(&filtered.stdout).unwrap();
+    assert_eq!(
+        filtered["topics"],
+        json!([
+            {"name":"alpha", "enabled":true, "root":null, "paths":["a"], "symlinks":[],
+             "hooks":{"to_repo":false,"to_system":false,"should_include":false}},
+            {"name":"beta", "enabled":false, "root":null, "paths":["b"], "symlinks":[],
+             "hooks":{"to_repo":true,"to_system":false,"should_include":false}}
+        ])
+    );
+    assert_eq!(filtered["hooks"], json!({"should_include":true}));
+    let unknown = f.run(&["manifest", "inspect", "--json", "-t", "missing"], None);
+    assert!(!unknown.status.success());
+    let error: Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert!(
+        error["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown topic 'missing'")
+    );
+}
+
+#[test]
+fn empty_remote_list_keeps_stdout_empty_and_respects_quiet() {
+    let f = Fixture::new();
+    let output = f.run(&["remote", "list"], None);
+    assert!(output.status.success());
+    assert_eq!(output.stdout.as_slice(), b"");
+    assert!(!output.stderr.is_empty());
+    let quiet = f.run(&["--quiet", "remote", "list"], None);
+    assert!(quiet.status.success());
+    assert_eq!(quiet.stdout.as_slice(), b"");
+    assert_eq!(quiet.stderr.as_slice(), b"");
+}
+
 // Invalid writes must preserve stored bytes; each case guards a distinct
 // diagnostic contract, with real Lua evaluation rather than mocked validation.
 #[test]
