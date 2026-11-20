@@ -306,7 +306,7 @@ For every topic in `manifest.lua`, Porchetta supports these fields:
 | `symlinks` | Map of link path to relative target or `porchetta.topic` | — |
 | `should_include(path)` | Return `false` to skip a file or directory | `true` |
 | `to_repo(path, content)` | Transform file content before storing | identity |
-| `to_system(path, content)` | Transform file content before writing locally | identity |
+| `to_system(path, content, current)` | Transform incoming content before writing. Use `current` to [keep settings local](docs/reference.md#keep-settings-local-to-each-machine). | identity |
 
 See [docs/reference.md](docs/reference.md) for merge semantics, line-ending normalization, and Lua helpers, or run `porchetta --help` and `porchetta manifest --help`.
 

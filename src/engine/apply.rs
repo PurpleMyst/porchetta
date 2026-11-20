@@ -67,7 +67,18 @@ pub fn apply(
                 let mut blob = repo.find_blob(blob_oid).with_context(|| {
                     format!("Failed to read blob '{blob_oid}' for topic '{topic_name}'")
                 })?;
-                let content = topic.to_system(change.relative_path.as_str(), blob.take_data())?;
+                let content =
+                    topic.to_system(change.relative_path.as_str(), blob.take_data(), || {
+                        match std::fs::read(&abs_path) {
+                        Ok(bytes) => Ok(Some(bytes)),
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                        Err(err) => Err(err).with_context(|| {
+                            format!(
+                                "Failed to read current file '{abs_path}' for topic '{topic_name}'"
+                            )
+                        }),
+                    }
+                    })?;
                 std::fs::write(&abs_path, content).with_context(|| {
                     format!("Failed to write '{abs_path}' for topic '{topic_name}'")
                 })?;

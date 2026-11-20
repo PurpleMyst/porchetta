@@ -17,7 +17,7 @@ paths and enable topics using the operating system, environment or hostname.
 | `paths` | Files or directories relative to `root`, or home when `root` is omitted. Use `"."` to capture the whole directory. |
 | `symlinks` | Map of link paths to targets; link paths are relative to the topic's base directory. |
 | `to_repo(path, content)` | Return the content to store, for example after replacing machine-specific paths. |
-| `to_system(path, content)` | Return the content to write to the filesystem. |
+| `to_system(path, content, current)` | Return the content to write on add or update. `current` is the existing file's raw bytes, or `nil` if absent. |
 | `should_include(path)` | Return a boolean to include or exclude a file or directory while scanning. |
 
 Topic and global `should_include` functions must both return `true` to include a
@@ -94,6 +94,45 @@ return {
 
 For valid UTF-8 content with no NUL byte, Porchetta normalizes CR-LF line endings
 to LF before and after `to_repo`, and before `to_system`.
+
+### Keep settings local to each machine
+
+Keep using Pi as usual. To sync `~/.pi/agent/settings.json` without sharing your
+thinking level or which changelog you last saw, have `to_repo` leave those keys
+out of the store and `to_system` copy them from the file on this machine:
+
+```lua
+local local_keys = { "defaultThinkingLevel", "lastChangelogVersion" }
+
+return {
+    topics = {
+        pi_agent = {
+            root = ".pi/agent",
+            paths = { "settings.json" },
+            to_repo = function(_, content)
+                local settings = porchetta.json.decode(content)
+                for _, key in ipairs(local_keys) do settings[key] = nil end
+                return porchetta.json.encode_pretty(settings)
+            end,
+            to_system = function(_, content, current)
+                local settings = porchetta.json.decode(content)
+                local existing = current and porchetta.json.decode(current) or {}
+                for _, key in ipairs(local_keys) do settings[key] = existing[key] end
+                return porchetta.json.encode_pretty(settings)
+            end,
+        },
+    },
+}
+```
+
+If a key isn't set on this machine, the hook leaves it unset. That includes a
+fresh install with no settings file.
+
+`current` contains the file as it is on disk when Porchetta applies the change,
+with line endings untouched. Hooks that don't need it can still take two
+arguments. If sync deletes the file, it deletes the whole file without calling
+the hook. This example doesn't protect against Pi saving at the same time or
+remove values from old commits.
 
 ### Symlinks and topic references
 

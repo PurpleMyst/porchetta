@@ -63,9 +63,13 @@ fn test_apply_rewrite() {
         topics = {
             test = {
                 root = ".config/test",
-                paths = {"config.txt"},
-                to_system = function(path, content)
-                    return content:gsub("REPO", "SYSTEM")
+                paths = {"config.txt", "new.txt"},
+                to_repo = function(_, content)
+                    return (content:gsub("|.*$", ""))
+                end,
+                to_system = function(_, content, current)
+                    local local_state = current and current:match("|.*$") or "|default"
+                    return content:gsub("REPO", "SYSTEM") .. local_state
                 end,
             }
         }
@@ -76,12 +80,14 @@ fn test_apply_rewrite() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("config.txt"), "initial").unwrap();
 
-    // First sync: capture initial state and push it.
+    // First sync: capture the shared portion of the file.
     store
         .sync_at(&home, false, true, &[], &PanickingResolver)
         .unwrap();
 
-    // Manually create a new commit on the topic branch with repo-specific content.
+    std::fs::write(topic_dir.join("config.txt"), "initial|local choice").unwrap();
+
+    // Simulate a different machine updating one file and adding another.
     let head = store
         .head(&Branch::topic("test"))
         .unwrap()
@@ -98,11 +104,15 @@ fn test_apply_rewrite() {
     tree_editor
         .upsert("config.txt", gix::objs::tree::EntryKind::Blob, new_blob)
         .unwrap();
+    tree_editor
+        .upsert("new.txt", gix::objs::tree::EntryKind::Blob, new_blob)
+        .unwrap();
     let new_tree_id = tree_editor.write().unwrap();
 
     store
         .commit_topic_tree("test", "bogus", new_tree_id, "Modified")
         .unwrap();
+    let incoming_head = store.head(&Branch::topic("test")).unwrap();
 
     // Sync again: remote change should be transformed by to_system.
     store
@@ -110,7 +120,12 @@ fn test_apply_rewrite() {
         .unwrap();
 
     let system_content = std::fs::read_to_string(topic_dir.join("config.txt")).unwrap();
-    assert_eq!(system_content, "hello SYSTEM");
+    assert_eq!(system_content, "hello SYSTEM|local choice");
+    assert_eq!(
+        std::fs::read_to_string(topic_dir.join("new.txt")).unwrap(),
+        "hello SYSTEM|default"
+    );
+    assert_eq!(store.head(&Branch::topic("test")).unwrap(), incoming_head);
 }
 
 #[test]

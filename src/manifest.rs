@@ -111,17 +111,9 @@ impl<S: SymlinkState> Topic<S> {
         hook_name: &str,
         func: &mlua::Function,
         path: &str,
-        content: &[u8],
+        args: impl mlua::IntoLuaMulti,
     ) -> Result<Vec<u8>> {
-        let path_arg = self
-            .lua
-            .create_string(path)
-            .with_context(|| format!("Failed to create path string for {hook_name}"))?;
-        let content_arg = self
-            .lua
-            .create_string(content)
-            .with_context(|| format!("Failed to create content string for {hook_name}"))?;
-        let result: Value = func.call((path_arg, content_arg)).with_context(|| {
+        let result: Value = func.call(args).with_context(|| {
             format!(
                 "{hook_name} hook for topic '{}' on '{path}' failed",
                 self.name
@@ -145,20 +137,40 @@ impl<S: SymlinkState> Topic<S> {
     pub fn to_repo(&self, path: &str, content: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
         let content = content.into();
         match &self.to_repo {
-            Some(func) => self.run_transform_hook("to_repo", func, path, &content),
+            Some(func) => self.run_transform_hook(
+                "to_repo",
+                func,
+                path,
+                (path, self.lua.create_string(&content)?),
+            ),
             None => Ok(content),
         }
     }
 
-    /// Run the `to_system` hook, returning transformed content.
+    /// Run the `to_system` hook, loading the current bytes only if a hook exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if the hook call fails or returns a non-string value.
-    pub fn to_system(&self, path: &str, content: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+    /// Returns an error if loading fails or the hook fails or returns a non-string value.
+    pub fn to_system(
+        &self,
+        path: &str,
+        content: impl Into<Vec<u8>>,
+        read_current: impl FnOnce() -> Result<Option<Vec<u8>>>,
+    ) -> Result<Vec<u8>> {
         let content = content.into();
         match &self.to_system {
-            Some(func) => self.run_transform_hook("to_system", func, path, &content),
+            Some(func) => {
+                let current = read_current()?
+                    .map(|bytes| self.lua.create_string(bytes))
+                    .transpose()?;
+                self.run_transform_hook(
+                    "to_system",
+                    func,
+                    path,
+                    (path, self.lua.create_string(&content)?, current),
+                )
+            }
             None => Ok(content),
         }
     }
